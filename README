@@ -1,0 +1,281 @@
+NAME
+    CBOR::XS - Concise Binary Object Representation (CBOR, RFC7049)
+
+SYNOPSIS
+     use CBOR::XS;
+
+     $binary_cbor_data = encode_cbor $perl_value;
+     $perl_value       = decode_cbor $binary_cbor_data;
+
+     # OO-interface
+
+     $coder = CBOR::XS->new;
+     #TODO
+
+DESCRIPTION
+    WARNING! THIS IS A PRE-ALPHA RELEASE! IT WILL CRASH, CORRUPT YOUR DATA
+    AND EAT YOUR CHILDREN!
+
+    This module converts Perl data structures to CBOR and vice versa. Its
+    primary goal is to be *correct* and its secondary goal is to be *fast*.
+    To reach the latter goal it was written in C.
+
+    See MAPPING, below, on how CBOR::XS maps perl values to CBOR values and
+    vice versa.
+
+FUNCTIONAL INTERFACE
+    The following convenience methods are provided by this module. They are
+    exported by default:
+
+    $cbor_data = encode_cbor $perl_scalar
+        Converts the given Perl data structure to CBOR representation.
+        Croaks on error.
+
+    $perl_scalar = decode_cbor $cbor_data
+        The opposite of "encode_cbor": expects a valid CBOR string to parse,
+        returning the resulting perl scalar. Croaks on error.
+
+OBJECT-ORIENTED INTERFACE
+    The object oriented interface lets you configure your own encoding or
+    decoding style, within the limits of supported formats.
+
+    $cbor = new CBOR::XS
+        Creates a new CBOR::XS object that can be used to de/encode CBOR
+        strings. All boolean flags described below are by default
+        *disabled*.
+
+        The mutators for flags all return the CBOR object again and thus
+        calls can be chained:
+
+        #TODO my $cbor = CBOR::XS->new->encode ({a => [1,2]});
+
+    $cbor = $cbor->max_depth ([$maximum_nesting_depth])
+    $max_depth = $cbor->get_max_depth
+        Sets the maximum nesting level (default 512) accepted while encoding
+        or decoding. If a higher nesting level is detected in CBOR data or a
+        Perl data structure, then the encoder and decoder will stop and
+        croak at that point.
+
+        Nesting level is defined by number of hash- or arrayrefs that the
+        encoder needs to traverse to reach a given point or the number of
+        "{" or "[" characters without their matching closing parenthesis
+        crossed to reach a given character in a string.
+
+        Setting the maximum depth to one disallows any nesting, so that
+        ensures that the object is only a single hash/object or array.
+
+        If no argument is given, the highest possible setting will be used,
+        which is rarely useful.
+
+        Note that nesting is implemented by recursion in C. The default
+        value has been chosen to be as large as typical operating systems
+        allow without crashing.
+
+        See SECURITY CONSIDERATIONS, below, for more info on why this is
+        useful.
+
+    $cbor = $cbor->max_size ([$maximum_string_size])
+    $max_size = $cbor->get_max_size
+        Set the maximum length a CBOR string may have (in bytes) where
+        decoding is being attempted. The default is 0, meaning no limit.
+        When "decode" is called on a string that is longer then this many
+        bytes, it will not attempt to decode the string but throw an
+        exception. This setting has no effect on "encode" (yet).
+
+        If no argument is given, the limit check will be deactivated (same
+        as when 0 is specified).
+
+        See SECURITY CONSIDERATIONS, below, for more info on why this is
+        useful.
+
+    $cbor_data = $cbor->encode ($perl_scalar)
+        Converts the given Perl data structure (a scalar value) to its CBOR
+        representation.
+
+    $perl_scalar = $cbor->decode ($cbor_data)
+        The opposite of "encode": expects CBOR data and tries to parse it,
+        returning the resulting simple scalar or reference. Croaks on error.
+
+    ($perl_scalar, $octets) = $cbor->decode_prefix ($cbor_data)
+        This works like the "decode" method, but instead of raising an
+        exception when there is trailing garbage after the CBOR string, it
+        will silently stop parsing there and return the number of characters
+        consumed so far.
+
+        This is useful if your CBOR texts are not delimited by an outer
+        protocol and you need to know where the first CBOR string ends amd
+        the next one starts.
+
+           CBOR::XS->new->decode_prefix ("......")
+           => ("...", 3)
+
+MAPPING
+    This section describes how CBOR::XS maps Perl values to CBOR values and
+    vice versa. These mappings are designed to "do the right thing" in most
+    circumstances automatically, preserving round-tripping characteristics
+    (what you put in comes out as something equivalent).
+
+    For the more enlightened: note that in the following descriptions,
+    lowercase *perl* refers to the Perl interpreter, while uppercase *Perl*
+    refers to the abstract Perl language itself.
+
+  CBOR -> PERL
+    True, False
+        These CBOR values become "CBOR::XS::true" and "CBOR::XS::false",
+        respectively. They are overloaded to act almost exactly like the
+        numbers 1 and 0. You can check whether a scalar is a CBOR boolean by
+        using the "CBOR::XS::is_bool" function.
+
+    null
+        A CBOR Null value becomes "undef" in Perl.
+
+  PERL -> CBOR
+    The mapping from Perl to CBOR is slightly more difficult, as Perl is a
+    truly typeless language, so we can only guess which CBOR type is meant
+    by a Perl value.
+
+    hash references
+        Perl hash references become CBOR maps. As there is no inherent
+        ordering in hash keys (or CBOR maps), they will usually be encoded
+        in a pseudo-random order.
+
+    array references
+        Perl array references become CBOR arrays.
+
+    other references
+        Other unblessed references are generally not allowed and will cause
+        an exception to be thrown, except for references to the integers 0
+        and 1, which get turned into "False" and "True" in CBOR.
+
+    CBOR::XS::true, CBOR::XS::false
+        These special values become CBOR True and CBOR False values,
+        respectively. You can also use "\1" and "\0" directly if you want.
+
+    blessed objects
+        Blessed objects are not directly representable in CBOR. TODO See the
+        "allow_blessed" and "convert_blessed" methods on various options on
+        how to deal with this: basically, you can choose between throwing an
+        exception, encoding the reference as if it weren't blessed, or
+        provide your own serialiser method.
+
+    simple scalars
+        TODO Simple Perl scalars (any scalar that is not a reference) are
+        the most difficult objects to encode: CBOR::XS will encode undefined
+        scalars as CBOR "Null" values, scalars that have last been used in a
+        string context before encoding as CBOR strings, and anything else as
+        number value:
+
+           # dump as number
+           encode_cbor [2]                      # yields [2]
+           encode_cbor [-3.0e17]                # yields [-3e+17]
+           my $value = 5; encode_cbor [$value]  # yields [5]
+
+           # used as string, so dump as string
+           print $value;
+           encode_cbor [$value]                 # yields ["5"]
+
+           # undef becomes null
+           encode_cbor [undef]                  # yields [null]
+
+        You can force the type to be a CBOR string by stringifying it:
+
+           my $x = 3.1; # some variable containing a number
+           "$x";        # stringified
+           $x .= "";    # another, more awkward way to stringify
+           print $x;    # perl does it for you, too, quite often
+
+        You can force the type to be a CBOR number by numifying it:
+
+           my $x = "3"; # some variable containing a string
+           $x += 0;     # numify it, ensuring it will be dumped as a number
+           $x *= 1;     # same thing, the choice is yours.
+
+        You can not currently force the type in other, less obscure, ways.
+        Tell me if you need this capability (but don't forget to explain why
+        it's needed :).
+
+        Note that numerical precision has the same meaning as under Perl (so
+        binary to decimal conversion follows the same rules as in Perl,
+        which can differ to other languages). Also, your perl interpreter
+        might expose extensions to the floating point numbers of your
+        platform, such as infinities or NaN's - these cannot be represented
+        in CBOR, and it is an error to pass those in.
+
+  CBOR and JSON
+    TODO
+
+SECURITY CONSIDERATIONS
+    When you are using CBOR in a protocol, talking to untrusted potentially
+    hostile creatures requires relatively few measures.
+
+    First of all, your CBOR decoder should be secure, that is, should not
+    have any buffer overflows. Obviously, this module should ensure that and
+    I am trying hard on making that true, but you never know.
+
+    Second, you need to avoid resource-starving attacks. That means you
+    should limit the size of CBOR data you accept, or make sure then when
+    your resources run out, that's just fine (e.g. by using a separate
+    process that can crash safely). The size of a CBOR string in octets is
+    usually a good indication of the size of the resources required to
+    decode it into a Perl structure. While CBOR::XS can check the size of
+    the CBOR text, it might be too late when you already have it in memory,
+    so you might want to check the size before you accept the string.
+
+    Third, CBOR::XS recurses using the C stack when decoding objects and
+    arrays. The C stack is a limited resource: for instance, on my amd64
+    machine with 8MB of stack size I can decode around 180k nested arrays
+    but only 14k nested CBOR objects (due to perl itself recursing deeply on
+    croak to free the temporary). If that is exceeded, the program crashes.
+    To be conservative, the default nesting limit is set to 512. If your
+    process has a smaller stack, you should adjust this setting accordingly
+    with the "max_depth" method.
+
+    Something else could bomb you, too, that I forgot to think of. In that
+    case, you get to keep the pieces. I am always open for hints, though...
+
+    Also keep in mind that CBOR::XS might leak contents of your Perl data
+    structures in its error messages, so when you serialise sensitive
+    information you might want to make sure that exceptions thrown by
+    CBOR::XS will not end up in front of untrusted eyes.
+
+CBOR IMPLEMENTATION NOTES
+    This section contains some random implementation notes. They do not
+    describe guaranteed behaviour, but merely behaviour as-is implemented
+    right now.
+
+    64 bit integers are only properly decoded when Perl was built with 64
+    bit support.
+
+    Strings and arrays are encoded with a definite length. Hashes as well,
+    unless they are tied (or otherwise magical).
+
+    Only the double data type is supported for NV data types - when Perl
+    uses long double to represent floating point values, they might not be
+    encoded properly. Half precision types are accepted, but not encoded.
+
+    Strict mode and canonical mode are not implemented.
+
+THREADS
+    This module is *not* guaranteed to be thread safe and there are no plans
+    to change this until Perl gets thread support (as opposed to the
+    horribly slow so-called "threads" which are simply slow and bloated
+    process simulations - use fork, it's *much* faster, cheaper, better).
+
+    (It might actually work, but you have been warned).
+
+BUGS
+    While the goal of this module is to be correct, that unfortunately does
+    not mean it's bug-free, only that I think its design is bug-free. If you
+    keep reporting bugs they will be fixed swiftly, though.
+
+    Please refrain from using rt.cpan.org or any other bug reporting
+    service. I put the contact address into my modules for a reason.
+
+SEE ALSO
+    The JSON and JSON::XS modules that do similar, but human-readable,
+    serialisation.
+
+AUTHOR
+     Marc Lehmann <schmorp@schmorp.de>
+     http://home.schmorp.de/
+

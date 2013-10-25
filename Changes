@@ -1,0 +1,5 @@
+Revision history for Perl extension CBOR::XS
+
+0.01  Fri Oct 25 21:39:56 CEST 2013
+	- original version; cloned from JSON-XS
+
