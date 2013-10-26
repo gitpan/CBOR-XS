@@ -1,5 +1,14 @@
 Revision history for Perl extension CBOR::XS
 
+0.02  Sat Oct 26 13:08:05 CEST 2013
+	- no aborts left.
+	- add $CBOR::XS::MAGIC.
+	- preliminary tagged decoding to arrayref.
+	- indefinite encoding fixed.
+        - half float decoding implemented.
+	- t/50_rfc.t adds test vectors from the rfc, which
+          are checked as applicable.
+
 0.01  Fri Oct 25 21:39:56 CEST 2013
 	- original version; cloned from JSON-XS
 

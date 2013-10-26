@@ -126,8 +126,9 @@ MAPPING
         numbers 1 and 0. You can check whether a scalar is a CBOR boolean by
         using the "CBOR::XS::is_bool" function.
 
-    null
-        A CBOR Null value becomes "undef" in Perl.
+    Null, Undefined
+        CBOR Null and Undefined values becomes "undef" in Perl (in the
+        future, Undefined may raise an exception).
 
   PERL -> CBOR
     The mapping from Perl to CBOR is slightly more difficult, as Perl is a
@@ -200,6 +201,17 @@ MAPPING
         might expose extensions to the floating point numbers of your
         platform, such as infinities or NaN's - these cannot be represented
         in CBOR, and it is an error to pass those in.
+
+  MAGIC HEADER
+    There is no way to distinguish CBOR from other formats programmatically.
+    To make it easier to distinguish CBOR from other formats, the CBOR
+    specification has a special "magic string" that can be prepended to any
+    CBOR string without changing it's meaning.
+
+    This string is available as $CBOR::XS::MAGIC. This module does not
+    prepend this string tot he CBOR data it generates, but it will ignroe it
+    if present, so users can prepend this string as a "file type" indicator
+    as required.
 
   CBOR and JSON
     TODO

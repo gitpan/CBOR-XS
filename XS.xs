@@ -11,10 +11,6 @@
 
 #include "ecb.h"
 
-#if defined(__BORLANDC__) || defined(_MSC_VER)
-# define snprintf _snprintf // C compilers have this in stdio.h
-#endif
-
 #define F_SHRINK         0x00000200UL
 #define F_ALLOW_UNKNOWN  0x00002000UL
 
@@ -506,7 +502,7 @@ decode_av (dec_t *dec)
         {
           WANT (1);
 
-          if (*dec->cur == 0xe0 | 31)
+          if (*dec->cur == (0xe0 | 31))
             {
               ++dec->cur;
               break;
@@ -549,7 +545,7 @@ decode_hv (dec_t *dec)
         {
           WANT (1);
 
-          if (*dec->cur == 0xe0 | 31)
+          if (*dec->cur == (0xe0 | 31))
             {
               ++dec->cur;
               break;
@@ -754,7 +750,7 @@ decode_str (dec_t *dec, int utf8)
         {
           WANT (1);
 
-          if (*dec->cur == 0xe0 | 31)
+          if (*dec->cur == (0xe0 | 31))
             {
               ++dec->cur;
               break;
@@ -783,6 +779,21 @@ fail:
 }
 
 static SV *
+decode_tagged (dec_t *dec)
+{
+  UV tag = decode_uint (dec);
+  SV *sv = decode_sv (dec);
+
+  if (tag == 55799) // 2.4.5 Self-Describe CBOR
+    return sv;
+
+  AV *av = newAV ();
+  av_push (av, newSVuv (tag));
+  av_push (av, sv);
+  return newRV_noinc ((SV *)av);
+}
+
+static SV *
 decode_sv (dec_t *dec)
 {
   WANT (1);
@@ -803,8 +814,7 @@ decode_sv (dec_t *dec)
       case 5: // map
         return decode_hv (dec);
       case 6: // tag
-        abort ();
-        break;
+        return decode_tagged (dec);
       case 7: // misc
         switch (*dec->cur++ & 31)
           {
@@ -822,9 +832,14 @@ decode_sv (dec_t *dec)
               return newSVsv (&PL_sv_undef);
 
             case 25:
-              // half float
-              abort ();
-              break;
+              {
+                WANT (2);
+
+                uint16_t fp = (dec->cur[0] << 8) | dec->cur[1];
+                dec->cur += 2;
+
+                return newSVnv (ecb_binary16_to_float (fp));
+              }
 
             case 26:
               {
@@ -977,17 +992,14 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
     *offset_return = dec.cur;
 
   if (!(offset_return || !sv))
-    {
-      if (*dec.cur && !dec.err)
-        {
-          dec.err = "garbage after CBOR object";
-          SvREFCNT_dec (sv);
-          sv = 0;
-        }
-    }
+    if (dec.cur != dec.end && !dec.err)
+      dec.err = "garbage after CBOR object";
 
-  if (!sv)
-    croak ("%s, at offset %d (octet 0x%02x)", dec.err, dec.cur - (U8 *)SvPVX (string), (int)(uint8_t)*dec.cur);
+  if (dec.err)
+    {
+      SvREFCNT_dec (sv);
+      croak ("%s, at offset %d (octet 0x%02x)", dec.err, dec.cur - (U8 *)SvPVX (string), (int)(uint8_t)*dec.cur);
+    }
 
   sv = sv_2mortal (sv);
 

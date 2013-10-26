@@ -34,13 +34,15 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
 
 use Exporter;
 use XSLoader;
+
+our $MAGIC = "\xd9\xd9\xf7";
 
 =head1 FUNCTIONAL INTERFACE
 
@@ -170,9 +172,10 @@ respectively. They are overloaded to act almost exactly like the numbers
 C<1> and C<0>. You can check whether a scalar is a CBOR boolean by using
 the C<CBOR::XS::is_bool> function.
 
-=item null
+=item Null, Undefined
 
-A CBOR Null value becomes C<undef> in Perl.
+CBOR Null and Undefined values becomes C<undef> in Perl (in the future,
+Undefined may raise an exception).
 
 =back
 
@@ -260,6 +263,19 @@ infinities or NaN's - these cannot be represented in CBOR, and it is an
 error to pass those in.
 
 =back
+
+
+=head2 MAGIC HEADER
+
+There is no way to distinguish CBOR from other formats
+programmatically. To make it easier to distinguish CBOR from other
+formats, the CBOR specification has a special "magic string" that can be
+prepended to any CBOR string without changing it's meaning.
+
+This string is available as C<$CBOR::XS::MAGIC>. This module does not
+prepend this string tot he CBOR data it generates, but it will ignroe it
+if present, so users can prepend this string as a "file type" indicator as
+required.
 
 
 =head2 CBOR and JSON
