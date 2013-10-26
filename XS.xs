@@ -19,17 +19,6 @@
 #define SB do {
 #define SE } while (0)
 
-#if __GNUC__ >= 3
-# define expect(expr,value)         __builtin_expect ((expr), (value))
-# define INLINE                     static inline
-#else
-# define expect(expr,value)         (expr)
-# define INLINE                     static
-#endif
-
-#define expect_false(expr) expect ((expr) != 0, 0)
-#define expect_true(expr)  expect ((expr) != 0, 1)
-
 #define IN_RANGE_INC(type,val,beg,end) \
   ((unsigned type)((unsigned type)(val) - (unsigned type)(beg)) \
   <= (unsigned type)((unsigned type)(end) - (unsigned type)(beg)))
@@ -44,19 +33,16 @@
 # define CBOR_STASH cbor_stash
 #endif
 
-static HV *cbor_stash, *cbor_boolean_stash; // CBOR::XS::
+static HV *cbor_stash, *cbor_boolean_stash, *cbor_tagged_stash; // CBOR::XS::
 static SV *cbor_true, *cbor_false;
 
 typedef struct {
   U32 flags;
   U32 max_depth;
   STRLEN max_size;
-
-  SV *cb_object;
-  HV *cb_sk_object;
 } CBOR;
 
-INLINE void
+ecb_inline void
 cbor_init (CBOR *cbor)
 {
   Zero (cbor, 1, CBOR);
@@ -66,7 +52,7 @@ cbor_init (CBOR *cbor)
 /////////////////////////////////////////////////////////////////////////////
 // utility functions
 
-INLINE SV *
+ecb_inline SV *
 get_bool (const char *name)
 {
   SV *sv = get_sv (name, 1);
@@ -77,7 +63,7 @@ get_bool (const char *name)
   return sv;
 }
 
-INLINE void
+ecb_inline void
 shrink (SV *sv)
 {
   sv_utf8_downgrade (sv, 1);
@@ -110,10 +96,10 @@ typedef struct
   U32 depth;  // recursion level
 } enc_t;
 
-INLINE void
+ecb_inline void
 need (enc_t *enc, STRLEN len)
 {
-  if (expect_false (enc->cur + len >= enc->end))
+  if (ecb_expect_false (enc->cur + len >= enc->end))
     {
       STRLEN cur = enc->cur - (char *)SvPVX (enc->sv);
       SvGROW (enc->sv, cur + (len < (cur >> 2) ? cur >> 2 : len) + 1);
@@ -122,7 +108,7 @@ need (enc_t *enc, STRLEN len)
     }
 }
 
-INLINE void
+ecb_inline void
 encode_ch (enc_t *enc, char ch)
 {
   need (enc, 1);
@@ -136,18 +122,18 @@ encode_uint (enc_t *enc, int major, UV len)
 
    if (len < 24)
       *enc->cur++ = major | len;
-   else if (len < 0x100)
+   else if (len <= 0xff)
      {
        *enc->cur++ = major | 24;
        *enc->cur++ = len;
      }
-   else if (len < 0x10000)
+   else if (len <= 0xffff)
      {
        *enc->cur++ = major | 25;
        *enc->cur++ = len >> 8;
        *enc->cur++ = len;
      }
-   else if (len < 0x100000000)
+   else if (len <= 0xffffffff)
      {
        *enc->cur++ = major | 26;
        *enc->cur++ = len >> 24;
@@ -155,7 +141,7 @@ encode_uint (enc_t *enc, int major, UV len)
        *enc->cur++ = len >>  8;
        *enc->cur++ = len;
      }
-   else if (len)
+   else
      {
        *enc->cur++ = major | 27;
        *enc->cur++ = len >> 56;
@@ -226,7 +212,7 @@ encode_hv (enc_t *enc, HV *hv)
       else
         encode_str (enc, HeKUTF8 (he), HeKEY (he), HeKLEN (he));
 
-      encode_sv (enc, expect_false (mg) ? hv_iterval (hv, he) : HeVAL (he));
+      encode_sv (enc, ecb_expect_false (mg) ? hv_iterval (hv, he) : HeVAL (he));
     }
 
   if (mg)
@@ -244,57 +230,56 @@ encode_rv (enc_t *enc, SV *sv)
   SvGETMAGIC (sv);
   svt = SvTYPE (sv);
 
-  if (expect_false (SvOBJECT (sv)))
+  if (ecb_expect_false (SvOBJECT (sv)))
     {
-      HV *stash = !CBOR_SLOW || cbor_boolean_stash
-                  ? cbor_boolean_stash
-                  : gv_stashpv ("CBOR::XS::Boolean", 1);
+      HV *boolean_stash = !CBOR_SLOW || cbor_boolean_stash
+                          ? cbor_boolean_stash
+                          : gv_stashpv ("CBOR::XS::Boolean", 1);
+      HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
+                          ? cbor_tagged_stash
+                          : gv_stashpv ("CBOR::XS::Tagged" , 1);
 
-      if (SvSTASH (sv) == stash)
+      if (SvSTASH (sv) == boolean_stash)
         encode_ch (enc, SvIV (sv) ? 0xe0 | 21 : 0xe0 | 20);
+      else if (SvSTASH (sv) == tagged_stash)
+        {
+          if (svt != SVt_PVAV)
+            croak ("encountered CBOR::XS::Tagged object that isn't an array");
+
+          encode_uint (enc, 0xc0, SvUV (*av_fetch ((AV *)sv, 0, 1)));
+          encode_sv (enc, *av_fetch ((AV *)sv, 1, 1));
+        }
       else
         {
-#if 0 //TODO
-          if (enc->cbor.flags & F_CONV_BLESSED)
+          // we re-bless the reference to get overload and other niceties right
+          GV *to_cbor = gv_fetchmethod_autoload (SvSTASH (sv), "TO_CBOR", 0);
+
+          if (to_cbor)
             {
-              // we re-bless the reference to get overload and other niceties right
-              GV *to_cbor = gv_fetchmethod_autoload (SvSTASH (sv), "TO_CBOR", 0);
+              dSP;
 
-              if (to_cbor)
-                {
-                  dSP;
+              ENTER; SAVETMPS; PUSHMARK (SP);
+              XPUSHs (sv_bless (sv_2mortal (newRV_inc (sv)), SvSTASH (sv)));
 
-                  ENTER; SAVETMPS; PUSHMARK (SP);
-                  XPUSHs (sv_bless (sv_2mortal (newRV_inc (sv)), SvSTASH (sv)));
+              // calling with G_SCALAR ensures that we always get a 1 return value
+              PUTBACK;
+              call_sv ((SV *)GvCV (to_cbor), G_SCALAR);
+              SPAGAIN;
 
-                  // calling with G_SCALAR ensures that we always get a 1 return value
-                  PUTBACK;
-                  call_sv ((SV *)GvCV (to_cbor), G_SCALAR);
-                  SPAGAIN;
+              // catch this surprisingly common error
+              if (SvROK (TOPs) && SvRV (TOPs) == sv)
+                croak ("%s::TO_CBOR method returned same object as was passed instead of a new one", HvNAME (SvSTASH (sv)));
 
-                  // catch this surprisingly common error
-                  if (SvROK (TOPs) && SvRV (TOPs) == sv)
-                    croak ("%s::TO_CBOR method returned same object as was passed instead of a new one", HvNAME (SvSTASH (sv)));
+              sv = POPs;
+              PUTBACK;
 
-                  sv = POPs;
-                  PUTBACK;
+              encode_sv (enc, sv);
 
-                  encode_sv (enc, sv);
-
-                  FREETMPS; LEAVE;
-                }
-              else if (enc->cbor.flags & F_ALLOW_BLESSED)
-                encode_str (enc, "null", 4, 0);
-              else
-                croak ("encountered object '%s', but neither allow_blessed enabled nor TO_CBOR method available on it",
-                       SvPV_nolen (sv_2mortal (newRV_inc (sv))));
+              FREETMPS; LEAVE;
             }
-          else if (enc->cbor.flags & F_ALLOW_BLESSED)
-            encode_str (enc, "null", 4, 0);
           else
-            croak ("encountered object '%s', but neither allow_blessed nor convert_blessed settings are enabled",
+            croak ("encountered object '%s', but no TO_CBOR method available on it",
                    SvPV_nolen (sv_2mortal (newRV_inc (sv))));
-#endif
         }
     }
   else if (svt == SVt_PVHV)
@@ -330,10 +315,10 @@ encode_nv (enc_t *enc, SV *sv)
 
   need (enc, 9);
 
-  if (expect_false (nv == (U32)nv))
+  if (ecb_expect_false (nv == (U32)nv))
     encode_uint (enc, 0x00, (U32)nv);
   //TODO: maybe I32?
-  else if (expect_false (nv == (float)nv))
+  else if (ecb_expect_false (nv == (float)nv))
     {
       uint32_t fp = ecb_float_to_binary32 (nv);
 
@@ -431,7 +416,7 @@ typedef struct
 
 #define ERR(reason) SB if (!dec->err) dec->err = reason; goto fail; SE
 
-#define WANT(len) if (expect_false (dec->cur + len > dec->end)) ERR ("unexpected end of CBOR data");
+#define WANT(len) if (ecb_expect_false (dec->cur + len > dec->end)) ERR ("unexpected end of CBOR data")
 
 #define DEC_INC_DEPTH if (++dec->depth > dec->cbor.max_depth) ERR (ERR_NESTING_EXCEEDED)
 #define DEC_DEC_DEPTH --dec->depth
@@ -573,161 +558,6 @@ decode_hv (dec_t *dec)
   DEC_DEC_DEPTH;
   return newRV_noinc ((SV *)hv);
 
-#if 0
-  SV *sv;
-  HV *hv = newHV ();
-
-  DEC_INC_DEPTH;
-  decode_ws (dec);
-
-  for (;;)
-    {
-      // heuristic: assume that
-      // a) decode_str + hv_store_ent are abysmally slow.
-      // b) most hash keys are short, simple ascii text.
-      // => try to "fast-match" such strings to avoid
-      // the overhead of decode_str + hv_store_ent.
-      {
-        SV *value;
-        char *p = dec->cur;
-        char *e = p + 24; // only try up to 24 bytes
-
-        for (;;)
-          {
-            // the >= 0x80 is false on most architectures
-            if (p == e || *p < 0x20 || *p >= 0x80 || *p == '\\')
-              {
-                // slow path, back up and use decode_str
-                SV *key = decode_str (dec);
-                if (!key)
-                  goto fail;
-
-                decode_ws (dec); EXPECT_CH (':');
-
-                decode_ws (dec);
-                value = decode_sv (dec);
-                if (!value)
-                  {
-                    SvREFCNT_dec (key);
-                    goto fail;
-                  }
-
-                hv_store_ent (hv, key, value, 0);
-                SvREFCNT_dec (key);
-
-                break;
-              }
-            else if (*p == '"')
-              {
-                // fast path, got a simple key
-                char *key = dec->cur;
-                int len = p - key;
-                dec->cur = p + 1;
-
-                decode_ws (dec); EXPECT_CH (':');
-
-                decode_ws (dec);
-                value = decode_sv (dec);
-                if (!value)
-                  goto fail;
-
-                hv_store (hv, key, len, value, 0);
-
-                break;
-              }
-
-            ++p;
-          }
-      }
-
-      decode_ws (dec);
-
-      if (*dec->cur == '}')
-        {
-          ++dec->cur;
-          break;
-        }
-
-      if (*dec->cur != ',')
-        ERR (", or } expected while parsing object/hash");
-
-      ++dec->cur;
-
-      decode_ws (dec);
-
-      if (*dec->cur == '}' && dec->cbor.flags & F_RELAXED)
-        {
-          ++dec->cur;
-          break;
-        }
-    }
-
-  DEC_DEC_DEPTH;
-  sv = newRV_noinc ((SV *)hv);
-
-  // check filter callbacks
-  if (dec->cbor.flags & F_HOOK)
-    {
-      if (dec->cbor.cb_sk_object && HvKEYS (hv) == 1)
-        {
-          HE *cb, *he;
-
-          hv_iterinit (hv);
-          he = hv_iternext (hv);
-          hv_iterinit (hv);
-
-          // the next line creates a mortal sv each time its called.
-          // might want to optimise this for common cases.
-          cb = hv_fetch_ent (dec->cbor.cb_sk_object, hv_iterkeysv (he), 0, 0);
-
-          if (cb)
-            {
-              dSP;
-              int count;
-
-              ENTER; SAVETMPS; PUSHMARK (SP);
-              XPUSHs (HeVAL (he));
-              sv_2mortal (sv);
-
-              PUTBACK; count = call_sv (HeVAL (cb), G_ARRAY); SPAGAIN;
-
-              if (count == 1)
-                {
-                  sv = newSVsv (POPs);
-                  FREETMPS; LEAVE;
-                  return sv;
-                }
-
-              SvREFCNT_inc (sv);
-              FREETMPS; LEAVE;
-            }
-        }
-
-      if (dec->cbor.cb_object)
-        {
-          dSP;
-          int count;
-
-          ENTER; SAVETMPS; PUSHMARK (SP);
-          XPUSHs (sv_2mortal (sv));
-
-          PUTBACK; count = call_sv (dec->cbor.cb_object, G_ARRAY); SPAGAIN;
-
-          if (count == 1)
-            {
-              sv = newSVsv (POPs);
-              FREETMPS; LEAVE;
-              return sv;
-            }
-
-          SvREFCNT_inc (sv);
-          FREETMPS; LEAVE;
-        }
-    }
-
-  return sv;
-#endif
-
 fail:
   SvREFCNT_dec (hv);
   DEC_DEC_DEPTH;
@@ -737,7 +567,7 @@ fail:
 static SV *
 decode_str (dec_t *dec, int utf8)
 {
-  SV *sv;
+  SV *sv = 0;
 
   if ((*dec->cur & 31) == 31)
     {
@@ -756,8 +586,7 @@ decode_str (dec_t *dec, int utf8)
               break;
             }
 
-          SV *sv2 = decode_sv (dec);
-          sv_catsv (sv, sv2);
+          sv_catsv (sv, decode_sv (dec));
         }
     }
   else
@@ -775,6 +604,7 @@ decode_str (dec_t *dec, int utf8)
   return sv;
 
 fail:
+  SvREFCNT_dec (sv);
   return &PL_sv_undef;
 }
 
@@ -790,7 +620,12 @@ decode_tagged (dec_t *dec)
   AV *av = newAV ();
   av_push (av, newSVuv (tag));
   av_push (av, sv);
-  return newRV_noinc ((SV *)av);
+
+  HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
+                      ? cbor_tagged_stash
+                      : gv_stashpv ("CBOR::XS::Tagged" , 1);
+
+  return sv_bless (newRV_noinc ((SV *)av), tagged_stash);
 }
 
 static SV *
@@ -801,7 +636,6 @@ decode_sv (dec_t *dec)
   switch (*dec->cur >> 5)
     {
       case 0: // unsigned int
-        //TODO: 64 bit values on 3 2bit perls
         return newSVuv (decode_uint (dec));
       case 1: // negative int
         return newSViv (-1 - (IV)decode_uint (dec));
@@ -875,62 +709,6 @@ decode_sv (dec_t *dec)
 
         break;
   }
-#if 0
-  switch (*dec->cur)
-    {
-      //case '"': ++dec->cur; return decode_str (dec);
-      case '[': ++dec->cur; return decode_av  (dec);
-      case '{': ++dec->cur; return decode_hv  (dec);
-
-      case '-':
-      case '0': case '1': case '2': case '3': case '4':
-      case '5': case '6': case '7': case '8': case '9':
-        //TODO return decode_num (dec);
-
-      case 't':
-        if (dec->end - dec->cur >= 4 && !memcmp (dec->cur, "true", 4))
-          {
-            dec->cur += 4;
-#if CBOR_SLOW
-            cbor_true = get_bool ("CBOR::XS::true");
-#endif
-            return newSVsv (cbor_true);
-          }
-        else
-          ERR ("'true' expected");
-
-        break;
-
-      case 'f':
-        if (dec->end - dec->cur >= 5 && !memcmp (dec->cur, "false", 5))
-          {
-            dec->cur += 5;
-#if CBOR_SLOW
-            cbor_false = get_bool ("CBOR::XS::false");
-#endif
-            return newSVsv (cbor_false);
-          }
-        else
-          ERR ("'false' expected");
-
-        break;
-
-      case 'n':
-        if (dec->end - dec->cur >= 4 && !memcmp (dec->cur, "null", 4))
-          {
-            dec->cur += 4;
-            return newSVsv (&PL_sv_undef);
-          }
-        else
-          ERR ("'null' expected");
-
-        break;
-
-      default:
-        ERR ("malformed CBOR string, neither array, object, number, string or atom");
-        break;
-    }
-#endif
 
 fail:
   return &PL_sv_undef;
@@ -983,9 +761,6 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
   dec.err   = 0;
   dec.depth = 0;
 
-  if (dec.cbor.cb_object || dec.cbor.cb_sk_object)
-    ;//TODO dec.cbor.flags |= F_HOOK;
-
   sv = decode_sv (&dec);
 
   if (offset_return)
@@ -1015,6 +790,7 @@ BOOT:
 {
 	cbor_stash         = gv_stashpv ("CBOR::XS"         , 1);
 	cbor_boolean_stash = gv_stashpv ("CBOR::XS::Boolean", 1);
+	cbor_tagged_stash  = gv_stashpv ("CBOR::XS::Tagged" , 1);
 
         cbor_true  = get_bool ("CBOR::XS::true");
         cbor_false = get_bool ("CBOR::XS::false");
@@ -1026,6 +802,7 @@ void CLONE (...)
 	CODE:
         cbor_stash         = 0;
         cbor_boolean_stash = 0;
+        cbor_tagged_stash  = 0;
 
 void new (char *klass)
 	PPCODE:
@@ -1138,10 +915,14 @@ void decode_prefix (CBOR *self, SV *cborstr)
         PUSHs (sv_2mortal (newSVuv (offset - SvPVX (cborstr))));
 }
 
+#if 0
+
 void DESTROY (CBOR *self)
 	CODE:
         SvREFCNT_dec (self->cb_sk_object);
         SvREFCNT_dec (self->cb_object);
+
+#endif
 
 PROTOTYPES: ENABLE
 

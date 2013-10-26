@@ -1,5 +1,11 @@
 Revision history for Perl extension CBOR::XS
 
+0.03  Sun Oct 27 00:28:41 CEST 2013
+	- improve 32 bit platform compatibility.
+        - take more advantage of ecb.h.
+        - preliminary and bare-bones tagged support.
+        - improved docs.
+
 0.02  Sat Oct 26 13:08:05 CEST 2013
 	- no aborts left.
 	- add $CBOR::XS::MAGIC.

@@ -14,11 +14,19 @@ SYNOPSIS
 
 DESCRIPTION
     WARNING! THIS IS A PRE-ALPHA RELEASE! IT WILL CRASH, CORRUPT YOUR DATA
-    AND EAT YOUR CHILDREN!
+    AND EAT YOUR CHILDREN! (Actually, apart from being untested and a bit
+    feature-limited, it might already be useful).
 
-    This module converts Perl data structures to CBOR and vice versa. Its
-    primary goal is to be *correct* and its secondary goal is to be *fast*.
-    To reach the latter goal it was written in C.
+    This module converts Perl data structures to the Concise Binary Object
+    Representation (CBOR) and vice versa. CBOR is a fast binary
+    serialisation format that aims to use a superset of the JSON data model,
+    i.e. when you can represent something in JSON, you should be able to
+    represent it in CBOR.
+
+    This makes it a faster and more compact binary alternative to JSON.
+
+    The primary goal of this module is to be *correct* and the secondary
+    goal is to be *fast*. To reach the latter goal it was written in C.
 
     See MAPPING, below, on how CBOR::XS maps perl values to CBOR values and
     vice versa.
@@ -120,15 +128,46 @@ MAPPING
     refers to the abstract Perl language itself.
 
   CBOR -> PERL
-    True, False
+    integers
+        CBOR integers become (numeric) perl scalars. On perls without 64 bit
+        support, 64 bit integers will be truncated or otherwise corrupted.
+
+    byte strings
+        Byte strings will become octet strings in Perl (the byte values
+        0..255 will simply become characters of the same value in Perl).
+
+    UTF-8 strings
+        UTF-8 strings in CBOR will be decoded, i.e. the UTF-8 octets will be
+        decoded into proper Unicode code points. At the moment, the validity
+        of the UTF-8 octets will not be validated - corrupt input will
+        result in corrupted Perl strings.
+
+    arrays, maps
+        CBOR arrays and CBOR maps will be converted into references to a
+        Perl array or hash, respectively. The keys of the map will be
+        stringified during this process.
+
+    true, false
         These CBOR values become "CBOR::XS::true" and "CBOR::XS::false",
         respectively. They are overloaded to act almost exactly like the
         numbers 1 and 0. You can check whether a scalar is a CBOR boolean by
         using the "CBOR::XS::is_bool" function.
 
-    Null, Undefined
-        CBOR Null and Undefined values becomes "undef" in Perl (in the
-        future, Undefined may raise an exception).
+    null, undefined
+        CBOR null and undefined values becomes "undef" in Perl (in the
+        future, Undefined may raise an exception or something else).
+
+    tags
+        Tagged items consists of a numeric tag and another CBOR value. The
+        tag 55799 is ignored (this tag implements the magic header).
+
+        All other tags are currently converted into a CBOR::XS::Tagged
+        object, which is simply a blessed array reference consistsing of the
+        numeric tag value followed by the (decoded) BOR value.
+
+    anything else
+        Anything else (e.g. unsupported simple values) will raise a decoding
+        error.
 
   PERL -> CBOR
     The mapping from Perl to CBOR is slightly more difficult, as Perl is a
@@ -140,29 +179,35 @@ MAPPING
         ordering in hash keys (or CBOR maps), they will usually be encoded
         in a pseudo-random order.
 
+        Currently, tied hashes will use the indefinite-length format, while
+        normal hashes will use the fixed-length format.
+
     array references
-        Perl array references become CBOR arrays.
+        Perl array references become fixed-length CBOR arrays.
 
     other references
         Other unblessed references are generally not allowed and will cause
         an exception to be thrown, except for references to the integers 0
-        and 1, which get turned into "False" and "True" in CBOR.
+        and 1, which get turned into false and true in CBOR.
+
+    CBOR::XS::Tagged objects
+        Objects of this type must be arrays consisting of a single "[tag,
+        value]" pair. The (numerical) tag will be encoded as a CBOR tag, the
+        value will be encoded as appropriate for the value.
 
     CBOR::XS::true, CBOR::XS::false
-        These special values become CBOR True and CBOR False values,
+        These special values become CBOR true and CBOR false values,
         respectively. You can also use "\1" and "\0" directly if you want.
 
     blessed objects
-        Blessed objects are not directly representable in CBOR. TODO See the
-        "allow_blessed" and "convert_blessed" methods on various options on
-        how to deal with this: basically, you can choose between throwing an
-        exception, encoding the reference as if it weren't blessed, or
-        provide your own serialiser method.
+        Other blessed objects currently need to have a "TO_CBOR" method. It
+        will be called on every object that is being serialised, and must
+        return something that can be encoded in CBOR.
 
     simple scalars
         TODO Simple Perl scalars (any scalar that is not a reference) are
         the most difficult objects to encode: CBOR::XS will encode undefined
-        scalars as CBOR "Null" values, scalars that have last been used in a
+        scalars as CBOR null values, scalars that have last been used in a
         string context before encoding as CBOR strings, and anything else as
         number value:
 
@@ -195,12 +240,12 @@ MAPPING
         Tell me if you need this capability (but don't forget to explain why
         it's needed :).
 
-        Note that numerical precision has the same meaning as under Perl (so
-        binary to decimal conversion follows the same rules as in Perl,
-        which can differ to other languages). Also, your perl interpreter
-        might expose extensions to the floating point numbers of your
-        platform, such as infinities or NaN's - these cannot be represented
-        in CBOR, and it is an error to pass those in.
+        Perl values that seem to be integers generally use the shortest
+        possible representation. Floating-point values will use either the
+        IEEE single format if possible without loss of precision, otherwise
+        the IEEE double format will be used. Perls that use formats other
+        than IEEE double to represent numerical values are supported, but
+        might suffer loss of precision.
 
   MAGIC HEADER
     There is no way to distinguish CBOR from other formats programmatically.
@@ -214,7 +259,17 @@ MAPPING
     as required.
 
   CBOR and JSON
-    TODO
+    CBOR is supposed to implement a superset of the JSON data model, and is,
+    with some coercion, able to represent all JSON texts (something that
+    other "binary JSON" formats such as BSON generally do not support).
+
+    CBOR implements some extra hints and support for JSON interoperability,
+    and the spec offers further guidance for conversion between CBOR and
+    JSON. None of this is currently implemented in CBOR, and the guidelines
+    in the spec do not result in correct round-tripping of data. If JSON
+    interoperability is improved in the future, then the goal will be to
+    ensure that decoded JSON data will round-trip encoding and decoding to
+    CBOR intact.
 
 SECURITY CONSIDERATIONS
     When you are using CBOR in a protocol, talking to untrusted potentially

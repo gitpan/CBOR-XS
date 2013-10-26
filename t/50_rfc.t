@@ -1,4 +1,4 @@
-BEGIN { $| = 1; print "1..77\n"; }
+BEGIN { $| = 1; print "1..75\n"; }
 
 # examples from rfc7049
 
@@ -7,6 +7,8 @@ use CBOR::XS;
 
 binmode DATA;
 binmode STDOUT, ":utf8";
+
+my $test;
 
 sub ok($;$) {
    print $_[0] ? "" : "not ", "ok ", ++$test, " - $_[1]\n";
@@ -69,7 +71,7 @@ __DATA__
 +  100                           0x1864
 +  1000                          0x1903e8
 +  1000000                       0x1a000f4240
-+  1000000000000                 0x1b000000e8d4a51000
+   1000000000000                 0x1b000000e8d4a51000
    18446744073709551615          0x1bffffffffffffffff
    18446744073709551616          0xc249010000000000000000
    -18446744073709551616         0x3bffffffffffffffff
