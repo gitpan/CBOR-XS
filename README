@@ -10,7 +10,17 @@ SYNOPSIS
      # OO-interface
 
      $coder = CBOR::XS->new;
-     #TODO
+     $binary_cbor_data = $coder->encode ($perl_value);
+     $perl_value       = $coder->decode ($binary_cbor_data);
+
+     # prefix decoding
+
+     my $many_cbor_strings = ...;
+     while (length $many_cbor_strings) {
+        my ($data, $length) = $cbor->decode_prefix ($many_cbor_strings);
+        # data was decoded
+        substr $many_cbor_strings, 0, $length, ""; # remove decoded cbor string
+     }
 
 DESCRIPTION
     WARNING! THIS IS A PRE-ALPHA RELEASE! IT WILL CRASH, CORRUPT YOUR DATA
@@ -23,7 +33,8 @@ DESCRIPTION
     i.e. when you can represent something in JSON, you should be able to
     represent it in CBOR.
 
-    This makes it a faster and more compact binary alternative to JSON.
+    This makes it a faster and more compact binary alternative to JSON, with
+    the added ability of supporting serialising of perl objects.
 
     The primary goal of this module is to be *correct* and the secondary
     goal is to be *fast*. To reach the latter goal it was written in C.
@@ -147,23 +158,33 @@ MAPPING
         Perl array or hash, respectively. The keys of the map will be
         stringified during this process.
 
-    true, false
-        These CBOR values become "CBOR::XS::true" and "CBOR::XS::false",
+    null
+        CBOR null becomes "undef" in Perl.
+
+    true, false, undefined
+        These CBOR values become "Types:Serialiser::true",
+        "Types:Serialiser::false" and "Types::Serialiser::error",
         respectively. They are overloaded to act almost exactly like the
-        numbers 1 and 0. You can check whether a scalar is a CBOR boolean by
-        using the "CBOR::XS::is_bool" function.
+        numbers 1 and 0 (for true and false) or to throw an exception on
+        access (for error). See the Types::Serialiser manpage for details.
 
-    null, undefined
-        CBOR null and undefined values becomes "undef" in Perl (in the
-        future, Undefined may raise an exception or something else).
+    CBOR tag 256 (perl object)
+        The tag value 256 (TODO: pending iana registration) will be used to
+        deserialise a Perl object serialised with "FREEZE". See "OBJECT
+        SERIALISATION", below, for details.
 
-    tags
-        Tagged items consists of a numeric tag and another CBOR value. The
-        tag 55799 is ignored (this tag implements the magic header).
+    CBOR tag 55799 (magic header)
+        The tag 55799 is ignored (this tag implements the magic header).
 
-        All other tags are currently converted into a CBOR::XS::Tagged
-        object, which is simply a blessed array reference consistsing of the
-        numeric tag value followed by the (decoded) BOR value.
+    other CBOR tags
+        Tagged items consists of a numeric tag and another CBOR value. Tags
+        not handled internally are currently converted into a
+        CBOR::XS::Tagged object, which is simply a blessed array reference
+        consisting of the numeric tag value followed by the (decoded) CBOR
+        value.
+
+        In the future, support for user-supplied conversions might get
+        added.
 
     anything else
         Anything else (e.g. unsupported simple values) will raise a decoding
@@ -195,14 +216,15 @@ MAPPING
         value]" pair. The (numerical) tag will be encoded as a CBOR tag, the
         value will be encoded as appropriate for the value.
 
-    CBOR::XS::true, CBOR::XS::false
-        These special values become CBOR true and CBOR false values,
-        respectively. You can also use "\1" and "\0" directly if you want.
+    Types::Serialiser::true, Types::Serialiser::false,
+    Types::Serialiser::error
+        These special values become CBOR true, CBOR false and CBOR undefined
+        values, respectively. You can also use "\1", "\0" and "\undef"
+        directly if you want.
 
-    blessed objects
-        Other blessed objects currently need to have a "TO_CBOR" method. It
-        will be called on every object that is being serialised, and must
-        return something that can be encoded in CBOR.
+    other blessed objects
+        Other blessed objects are serialised via "TO_CBOR" or "FREEZE". See
+        "OBJECT SERIALISATION", below, for details.
 
     simple scalars
         TODO Simple Perl scalars (any scalar that is not a reference) are
@@ -247,7 +269,103 @@ MAPPING
         than IEEE double to represent numerical values are supported, but
         might suffer loss of precision.
 
-  MAGIC HEADER
+  OBJECT SERIALISATION
+    This module knows two way to serialise a Perl object: The CBOR-specific
+    way, and the generic way.
+
+    Whenever the encoder encounters a Perl object that it cnanot serialise
+    directly (most of them), it will first look up the "TO_CBOR" method on
+    it.
+
+    If it has a "TO_CBOR" method, it will call it with the object as only
+    argument, and expects exactly one return value, which it will then
+    substitute and encode it in the place of the object.
+
+    Otherwise, it will look up the "FREEZE" method. If it exists, it will
+    call it with the object as first argument, and the constant string
+    "CBOR" as the second argument, to distinguish it from other serialisers.
+
+    The "FREEZE" method can return any number of values (i.e. zero or more).
+    These will be encoded as CBOR perl object, together with the classname.
+
+    If an object supports neither "TO_CBOR" nor "FREEZE", encoding will fail
+    with an error.
+
+    Objects encoded via "TO_CBOR" cannot be automatically decoded, but
+    objects encoded via "FREEZE" can be decoded using the following
+    protocol:
+
+    When an encoded CBOR perl object is encountered by the decoder, it will
+    look up the "THAW" method, by using the stored classname, and will fail
+    if the method cannot be found.
+
+    After the lookup it will call the "THAW" method with the stored
+    classname as first argument, the constant string "CBOR" as second
+    argument, and all values returned by "FREEZE" as remaining arguments.
+
+   EXAMPLES
+    Here is an example "TO_CBOR" method:
+
+       sub My::Object::TO_CBOR {
+          my ($obj) = @_;
+
+          ["this is a serialised My::Object object", $obj->{id}]
+       }
+
+    When a "My::Object" is encoded to CBOR, it will instead encode a simple
+    array with two members: a string, and the "object id". Decoding this
+    CBOR string will yield a normal perl array reference in place of the
+    object.
+
+    A more useful and practical example would be a serialisation method for
+    the URI module. CBOR has a custom tag value for URIs, namely 32:
+
+      sub URI::TO_CBOR {
+         my ($self) = @_;
+         my $uri = "$self"; # stringify uri
+         utf8::upgrade $uri; # make sure it will be encoded as UTF-8 string
+         CBOR::XS::tagged 32, "$_[0]"
+      }
+
+    This will encode URIs as a UTF-8 string with tag 32, which indicates an
+    URI.
+
+    Decoding such an URI will not (currently) give you an URI object, but
+    instead a CBOR::XS::Tagged object with tag number 32 and the string -
+    exactly what was returned by "TO_CBOR".
+
+    To serialise an object so it can automatically be deserialised, you need
+    to use "FREEZE" and "THAW". To take the URI module as example, this
+    would be a possible implementation:
+
+       sub URI::FREEZE {
+          my ($self, $serialiser) = @_;
+          "$self" # encode url string
+       }
+
+       sub URI::THAW {
+          my ($class, $serialiser, $uri) = @_;
+
+          $class->new ($uri)
+       }
+
+    Unlike "TO_CBOR", multiple values can be returned by "FREEZE". For
+    example, a "FREEZE" method that returns "type", "id" and "variant"
+    values would cause an invocation of "THAW" with 5 arguments:
+
+       sub My::Object::FREEZE {
+          my ($self, $serialiser) = @_;
+
+          ($self->{type}, $self->{id}, $self->{variant})
+       }
+
+       sub My::Object::THAW {
+          my ($class, $serialiser, $type, $id, $variant) = @_;
+
+          $class-<new (type => $type, id => $id, variant => $variant)
+       }
+
+MAGIC HEADER
     There is no way to distinguish CBOR from other formats programmatically.
     To make it easier to distinguish CBOR from other formats, the CBOR
     specification has a special "magic string" that can be prepended to any
@@ -258,7 +376,7 @@ MAPPING
     if present, so users can prepend this string as a "file type" indicator
     as required.
 
-  CBOR and JSON
+CBOR and JSON
     CBOR is supposed to implement a superset of the JSON data model, and is,
     with some coercion, able to represent all JSON texts (something that
     other "binary JSON" formats such as BSON generally do not support).
@@ -341,6 +459,9 @@ BUGS
 SEE ALSO
     The JSON and JSON::XS modules that do similar, but human-readable,
     serialisation.
+
+    The Types::Serialiser module provides the data model for true, false and
+    error values.
 
 AUTHOR
      Marc Lehmann <schmorp@schmorp.de>

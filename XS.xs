@@ -11,6 +11,35 @@
 
 #include "ecb.h"
 
+// known tags
+enum cbor_tag
+{
+   // inofficial extensions (pending iana registration)
+   CBOR_TAG_PERL_OBJECT    = 256,
+   CBOR_TAG_GENERIC_OBJECT = 257,
+
+   // rfc7049
+   CBOR_TAG_DATETIME    =     0, // rfc4287, utf-8
+   CBOR_TAG_TIMESTAMP   =     1, // unix timestamp, any
+   CBOR_TAG_POS_BIGNUM  =     2, // byte string
+   CBOR_TAG_NEG_BIGNUM  =     3, // byte string
+   CBOR_TAG_DECIMAL     =     4, // decimal fraction, array
+   CBOR_TAG_BIGFLOAT    =     5, // array
+
+   CBOR_TAG_CONV_B64U   =    21, // base64url, any
+   CBOR_TAG_CONV_B64    =    22, // base64, any
+   CBOR_TAG_CONV_HEX    =    23, // base16, any
+   CBOR_TAG_CBOR        =    24, // embedded cbor, byte string
+
+   CBOR_TAG_URI         =    32, // URI rfc3986, utf-8
+   CBOR_TAG_B64U        =    33, // base64url rfc4648, utf-8
+   CBOR_TAG_B64         =    34, // base6 rfc46484, utf-8
+   CBOR_TAG_REGEX       =    35, // regex pcre/ecma262, utf-8
+   CBOR_TAG_MIME        =    36, // mime message rfc2045, utf-8
+
+   CBOR_TAG_MAGIC       = 55799  // self-describe cbor
+};
+
 #define F_SHRINK         0x00000200UL
 #define F_ALLOW_UNKNOWN  0x00002000UL
 
@@ -33,8 +62,8 @@
 # define CBOR_STASH cbor_stash
 #endif
 
-static HV *cbor_stash, *cbor_boolean_stash, *cbor_tagged_stash; // CBOR::XS::
-static SV *cbor_true, *cbor_false;
+static HV *cbor_stash, *types_boolean_stash, *types_error_stash, *cbor_tagged_stash; // CBOR::XS::
+static SV *types_true, *types_false, *types_error, *sv_cbor;
 
 typedef struct {
   U32 flags;
@@ -232,16 +261,24 @@ encode_rv (enc_t *enc, SV *sv)
 
   if (ecb_expect_false (SvOBJECT (sv)))
     {
-      HV *boolean_stash = !CBOR_SLOW || cbor_boolean_stash
-                          ? cbor_boolean_stash
-                          : gv_stashpv ("CBOR::XS::Boolean", 1);
+      HV *boolean_stash = !CBOR_SLOW || types_boolean_stash
+                          ? types_boolean_stash
+                          : gv_stashpv ("Types::Serialiser::Boolean", 1);
+      HV *error_stash   = !CBOR_SLOW || types_error_stash
+                          ? types_error_stash
+                          : gv_stashpv ("Types::Serialiser::Error", 1);
       HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
                           ? cbor_tagged_stash
                           : gv_stashpv ("CBOR::XS::Tagged" , 1);
 
-      if (SvSTASH (sv) == boolean_stash)
+      HV *stash = SvSTASH (sv);
+      GV *method;
+
+      if (stash == boolean_stash)
         encode_ch (enc, SvIV (sv) ? 0xe0 | 21 : 0xe0 | 20);
-      else if (SvSTASH (sv) == tagged_stash)
+      else if (stash == error_stash)
+        encode_ch (enc, 0xe0 | 23);
+      else if (stash == tagged_stash)
         {
           if (svt != SVt_PVAV)
             croak ("encountered CBOR::XS::Tagged object that isn't an array");
@@ -249,38 +286,61 @@ encode_rv (enc_t *enc, SV *sv)
           encode_uint (enc, 0xc0, SvUV (*av_fetch ((AV *)sv, 0, 1)));
           encode_sv (enc, *av_fetch ((AV *)sv, 1, 1));
         }
-      else
+      else if ((method = gv_fetchmethod_autoload (stash, "TO_CBOR", 0)))
         {
+          dSP;
+
+          ENTER; SAVETMPS; PUSHMARK (SP);
           // we re-bless the reference to get overload and other niceties right
-          GV *to_cbor = gv_fetchmethod_autoload (SvSTASH (sv), "TO_CBOR", 0);
+          XPUSHs (sv_bless (sv_2mortal (newRV_inc (sv)), stash));
 
-          if (to_cbor)
-            {
-              dSP;
+          PUTBACK;
+          // G_SCALAR ensures that return value is 1
+          call_sv ((SV *)GvCV (method), G_SCALAR);
+          SPAGAIN;
 
-              ENTER; SAVETMPS; PUSHMARK (SP);
-              XPUSHs (sv_bless (sv_2mortal (newRV_inc (sv)), SvSTASH (sv)));
+          // catch this surprisingly common error
+          if (SvROK (TOPs) && SvRV (TOPs) == sv)
+            croak ("%s::TO_CBOR method returned same object as was passed instead of a new one", HvNAME (stash));
 
-              // calling with G_SCALAR ensures that we always get a 1 return value
-              PUTBACK;
-              call_sv ((SV *)GvCV (to_cbor), G_SCALAR);
-              SPAGAIN;
+          encode_sv (enc, POPs);
 
-              // catch this surprisingly common error
-              if (SvROK (TOPs) && SvRV (TOPs) == sv)
-                croak ("%s::TO_CBOR method returned same object as was passed instead of a new one", HvNAME (SvSTASH (sv)));
+          PUTBACK;
 
-              sv = POPs;
-              PUTBACK;
-
-              encode_sv (enc, sv);
-
-              FREETMPS; LEAVE;
-            }
-          else
-            croak ("encountered object '%s', but no TO_CBOR method available on it",
-                   SvPV_nolen (sv_2mortal (newRV_inc (sv))));
+          FREETMPS; LEAVE;
         }
+      else if ((method = gv_fetchmethod_autoload (stash, "FREEZE", 0)) != 0)
+        {
+          dSP;
+
+          ENTER; SAVETMPS; PUSHMARK (SP);
+          EXTEND (SP, 2);
+          // we re-bless the reference to get overload and other niceties right
+          PUSHs (sv_bless (sv_2mortal (newRV_inc (sv)), stash));
+          PUSHs (sv_cbor);
+
+          PUTBACK;
+          int count = call_sv ((SV *)GvCV (method), G_ARRAY);
+          SPAGAIN;
+
+          // catch this surprisingly common error
+          if (count == 1 && SvROK (TOPs) && SvRV (TOPs) == sv)
+            croak ("%s::FREEZE(CBOR) method returned same object as was passed instead of a new one", HvNAME (stash));
+
+          encode_uint (enc, 0xc0, CBOR_TAG_PERL_OBJECT);
+          encode_uint (enc, 0x80, count + 1);
+          encode_str (enc, HvNAMEUTF8 (stash), HvNAME (stash), HvNAMELEN (stash));
+
+          while (count)
+            encode_sv (enc, SP[1 - count--]);
+
+          PUTBACK;
+
+          FREETMPS; LEAVE;
+        }
+      else
+        croak ("encountered object '%s', but no TO_CBOR or FREEZE methods available on it",
+               SvPV_nolen (sv_2mortal (newRV_inc (sv))));
     }
   else if (svt == SVt_PVHV)
     encode_hv (enc, (HV *)sv);
@@ -614,18 +674,66 @@ decode_tagged (dec_t *dec)
   UV tag = decode_uint (dec);
   SV *sv = decode_sv (dec);
 
-  if (tag == 55799) // 2.4.5 Self-Describe CBOR
+  if (tag == CBOR_TAG_MAGIC)
     return sv;
+  else if (tag == CBOR_TAG_PERL_OBJECT)
+    {
+      if (!SvROK (sv) || SvTYPE (SvRV (sv)) != SVt_PVAV)
+        ERR ("corrupted CBOR data (non-array perl object)");
 
-  AV *av = newAV ();
-  av_push (av, newSVuv (tag));
-  av_push (av, sv);
+      AV *av = (AV *)SvRV (sv);
+      int len = av_len (av) + 1;
+      HV *stash = gv_stashsv (*av_fetch (av, 0, 1), 0);
 
-  HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
-                      ? cbor_tagged_stash
-                      : gv_stashpv ("CBOR::XS::Tagged" , 1);
+      if (!stash)
+        ERR ("cannot decode perl-object (package does not exist)");
 
-  return sv_bless (newRV_noinc ((SV *)av), tagged_stash);
+      GV *method = gv_fetchmethod_autoload (stash, "THAW", 0);
+      
+      if (!method)
+        ERR ("cannot decode perl-object (package does not have a THAW method)");
+      
+      dSP;
+
+      ENTER; SAVETMPS; PUSHMARK (SP);
+      EXTEND (SP, len + 1);
+      // we re-bless the reference to get overload and other niceties right
+      PUSHs (*av_fetch (av, 0, 1));
+      PUSHs (sv_cbor);
+
+      int i;
+
+      for (i = 1; i < len; ++i)
+        PUSHs (*av_fetch (av, i, 1));
+
+      PUTBACK;
+      call_sv ((SV *)GvCV (method), G_SCALAR);
+      SPAGAIN;
+
+      sv = SvREFCNT_inc (POPs);
+
+      PUTBACK;
+
+      FREETMPS; LEAVE;
+
+      return sv;
+    }
+  else
+    {
+      AV *av = newAV ();
+      av_push (av, newSVuv (tag));
+      av_push (av, sv);
+
+      HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
+                          ? cbor_tagged_stash
+                          : gv_stashpv ("CBOR::XS::Tagged" , 1);
+
+      return sv_bless (newRV_noinc ((SV *)av), tagged_stash);
+    }
+
+fail:
+  SvREFCNT_dec (sv);
+  return &PL_sv_undef;
 }
 
 static SV *
@@ -654,16 +762,21 @@ decode_sv (dec_t *dec)
           {
             case 20:
 #if CBOR_SLOW
-              cbor_false = get_bool ("CBOR::XS::false");
+              types_false = get_bool ("Types::Serialiser::false");
 #endif
-              return newSVsv (cbor_false);
+              return newSVsv (types_false);
             case 21:
 #if CBOR_SLOW
-              cbor_true = get_bool ("CBOR::XS::true");
+              types_true = get_bool ("Types::Serialiser::true");
 #endif
-              return newSVsv (cbor_true);
+              return newSVsv (types_true);
             case 22:
               return newSVsv (&PL_sv_undef);
+            case 23:
+#if CBOR_SLOW
+              types_error = get_bool ("Types::Serialiser::error");
+#endif
+              return newSVsv (types_error);
 
             case 25:
               {
@@ -789,20 +902,27 @@ MODULE = CBOR::XS		PACKAGE = CBOR::XS
 BOOT:
 {
 	cbor_stash         = gv_stashpv ("CBOR::XS"         , 1);
-	cbor_boolean_stash = gv_stashpv ("CBOR::XS::Boolean", 1);
 	cbor_tagged_stash  = gv_stashpv ("CBOR::XS::Tagged" , 1);
 
-        cbor_true  = get_bool ("CBOR::XS::true");
-        cbor_false = get_bool ("CBOR::XS::false");
+	types_boolean_stash = gv_stashpv ("Types::Serialiser::Boolean", 1);
+	types_error_stash   = gv_stashpv ("Types::Serialiser::Error"  , 1);
+
+        types_true  = get_bool ("Types::Serialiser::true" );
+        types_false = get_bool ("Types::Serialiser::false");
+        types_error = get_bool ("Types::Serialiser::error");
+
+        sv_cbor = newSVpv ("CBOR", 0);
+        SvREADONLY_on (sv_cbor);
 }
 
 PROTOTYPES: DISABLE
 
 void CLONE (...)
 	CODE:
-        cbor_stash         = 0;
-        cbor_boolean_stash = 0;
-        cbor_tagged_stash  = 0;
+        cbor_stash          = 0;
+        cbor_tagged_stash   = 0;
+        types_error_stash   = 0;
+        types_boolean_stash = 0;
 
 void new (char *klass)
 	PPCODE:

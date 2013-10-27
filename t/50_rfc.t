@@ -1,4 +1,4 @@
-BEGIN { $| = 1; print "1..75\n"; }
+BEGIN { $| = 1; print "1..72\n"; }
 
 # examples from rfc7049
 
@@ -14,11 +14,12 @@ sub ok($;$) {
    print $_[0] ? "" : "not ", "ok ", ++$test, " - $_[1]\n";
 }
 
-$Data::Dumper::Terse    = 1;
-$Data::Dumper::Sortkeys = 1;
-$Data::Dumper::Pair     = ',';
-$Data::Dumper::Useqq    = 1;
-$Data::Dumper::Indent   = 0;
+$Data::Dumper::Terse     = 1;
+$Data::Dumper::Sortkeys  = 1;
+$Data::Dumper::Pair      = ',';
+$Data::Dumper::Useqq     = 1;
+$Data::Dumper::Indent    = 0;
+$Data::Dumper::Quotekeys = 1;
 
 while (<DATA>) {
    next unless /^([<>\+*])\s*(.*?)\s*0x([0-9a-f]+)$/;
@@ -83,7 +84,7 @@ __DATA__
 <  0                             0xf90000
    -0                            0xf98000
 <  1                             0xf93c00
-+  1.1                           0xfb3ff199999999999a
+*  1.1                           0xfb3ff199999999999a
 <  1.5                           0xf93e00
 <  65504                         0xf97bff
 <  100000                        0xfa47c35000
@@ -92,7 +93,7 @@ __DATA__
    5.960464477539063e-8          0xf90001
    0.00006103515625              0xf90400
 <  -4                            0xf9c400
-+  -4.1                          0xfbc010666666666666
+*  -4.1                          0xfbc010666666666666
    Infinity                      0xf97c00
    NaN                           0xf97e00
    -Infinity                     0xf9fc00
@@ -129,7 +130,7 @@ __DATA__
 *  [1,[2,3],[4,5]]               0x8301820203820405
 *  [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]0x98190102030405060708090a0b0c0d0e0f101112131415161718181819
 *  {}                            0xa0
-<  {1,2,3,4}                     0xa201020304
+   {1,2,3,4}                     0xa201020304
 <  {"a",1,"b",[2,3]}             0xa26161016162820203
 <  ["a",{"b","c"}]               0x826161a161626163
 <  {"a","A","b","B","c","C","d","D","e","E"}0xa56161614161626142616361436164614461656145

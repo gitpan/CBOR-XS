@@ -10,7 +10,8 @@ WriteMakefile(
     VERSION_FROM => "XS.pm",
     NAME         => "CBOR::XS",
     PREREQ_PM    => {
-       common::sense => 0,
+       common::sense     => 0,
+       Types::Serialiser => 0,
     },
 );
 

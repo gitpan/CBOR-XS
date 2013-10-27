@@ -1,5 +1,11 @@
 Revision history for Perl extension CBOR::XS
 
+0.04  Sun Oct 27 23:47:47 CET 2013
+	- implement TO_CBOR/FREEZE/THAW serialisation protocols.
+        - requested perl-object and generic-object tags from iana.
+        - switched to Types::Serialiser for true, false and error.
+        - disabled some fragile tests (thanks, andk).
+
 0.03  Sun Oct 27 00:28:41 CEST 2013
 	- improve 32 bit platform compatibility.
         - take more advantage of ecb.h.

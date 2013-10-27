@@ -18,5 +18,6 @@ no_index:
     - t
     - inc
 requires:
+  Types::Serialiser: 0
   common::sense: 0
-version: 0.03
+version: 0.04
