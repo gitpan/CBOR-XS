@@ -600,6 +600,7 @@ decode_hv (dec_t *dec)
           SV *v = decode_sv (dec);
 
           hv_store_ent (hv, k, v, 0);
+          SvREFCNT_dec (k);
         }
     }
   else
@@ -612,6 +613,7 @@ decode_hv (dec_t *dec)
           SV *v = decode_sv (dec);
 
           hv_store_ent (hv, k, v, 0);
+          SvREFCNT_dec (k);
         }
     }
 

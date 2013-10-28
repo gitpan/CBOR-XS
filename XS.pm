@@ -28,9 +28,14 @@ CBOR::XS - Concise Binary Object Representation (CBOR, RFC7049)
 
 =head1 DESCRIPTION
 
-WARNING! THIS IS A PRE-ALPHA RELEASE! IT WILL CRASH, CORRUPT YOUR DATA
-AND EAT YOUR CHILDREN! (Actually, apart from being untested and a bit
-feature-limited, it might already be useful).
+WARNING! This module is very new, and not very well tested (that's up to
+you to do). Furthermore, details of the implementation might change freely
+before version 1.0. And lastly, the object serialisation protocol depends
+on a pending IANA assignment, and until that assignment is official, this
+implementation is not interoperable with other implementations (even
+future versions of this module) until the assignment is done.
+
+You are still invited to try out CBOR, and this module.
 
 This module converts Perl data structures to the Concise Binary Object
 Representation (CBOR) and vice versa. CBOR is a fast binary serialisation
@@ -38,8 +43,8 @@ format that aims to use a superset of the JSON data model, i.e. when you
 can represent something in JSON, you should be able to represent it in
 CBOR.
 
-This makes it a faster and more compact binary alternative to JSON, with
-the added ability of supporting serialising of perl objects.
+In short, CBOR is a faster and very compact binary alternative to JSON,
+with the added ability of supporting serialisation of Perl objects.
 
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
@@ -53,7 +58,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.04;
+our $VERSION = 0.05;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);

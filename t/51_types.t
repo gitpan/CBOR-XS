@@ -1,4 +1,4 @@
-BEGIN { $| = 1; print "1..10\n"; }
+BEGIN { $| = 1; print "1..11\n"; }
 
 use Types::Serialiser;
 use CBOR::XS;
@@ -25,4 +25,9 @@ print $enc ne "\xf7" ? "not " : "", "ok 8\n";
 $dec = decode_cbor $enc;
 print Types::Serialiser::is_error $dec ? "" : "not ", "ok 9\n";
 
-print "ok 10\n";
+$enc = encode_cbor undef;
+print $enc ne "\xf6" ? "not " : "", "ok 10\n";
+
+$dec = decode_cbor $enc;
+print !defined $dec ? "" : "not ", "ok 11\n";
+

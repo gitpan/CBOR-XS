@@ -1,5 +1,8 @@
 Revision history for Perl extension CBOR::XS
 
+0.05  Mon Oct 28 22:27:47 CET 2013
+	- do not leak hash keys on decoding.
+
 0.04  Sun Oct 27 23:47:47 CET 2013
 	- implement TO_CBOR/FREEZE/THAW serialisation protocols.
         - requested perl-object and generic-object tags from iana.
