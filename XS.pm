@@ -48,6 +48,14 @@ with the added ability of supporting serialisation of Perl objects. (JSON
 often compresses better than CBOR though, so if you plan to compress the
 data later you might want to compare both formats first).
 
+To give you a general idea about speed, with texts in the megabyte range,
+C<CBOR::XS> usually encodes roughly twice as fast as L<Storable> or
+L<JSON::XS> and decodes about 15%-30% faster than those. The shorter the
+data, the worse L<Storable> performs in comparison.
+
+As for compactness, C<CBOR::XS> encoded data structures are usually about
+20% smaller than the same data encoded as (compact) JSON or L<Storable>.
+
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
 
@@ -60,7 +68,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.06;
+our $VERSION = 0.07;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);

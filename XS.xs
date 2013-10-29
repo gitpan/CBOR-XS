@@ -586,6 +586,40 @@ fail:
   return &PL_sv_undef;
 }
 
+static void
+decode_he (dec_t *dec, HV *hv)
+{
+  // for speed reasons, we specialcase single-string
+  // byte or utf-8 strings as keys.
+
+  if (*dec->cur >= 0x40 && *dec->cur <= 0x40 + 27)
+    {
+      I32 len = decode_uint (dec);
+      char *key = (char *)dec->cur;
+
+      dec->cur += len;
+
+      hv_store (hv, key,  len, decode_sv (dec), 0);
+    }
+  else if (*dec->cur >= 0x60 && *dec->cur <= 0x60 + 27)
+    {
+      I32 len = decode_uint (dec);
+      char *key = (char *)dec->cur;
+
+      dec->cur += len;
+
+      hv_store (hv, key, -len, decode_sv (dec), 0);
+    }
+  else
+    {
+      SV *k = decode_sv (dec);
+      SV *v = decode_sv (dec);
+
+      hv_store_ent (hv, k, v, 0);
+      SvREFCNT_dec (k);
+    }
+}
+
 static SV *
 decode_hv (dec_t *dec)
 {
@@ -607,25 +641,15 @@ decode_hv (dec_t *dec)
               break;
             }
 
-          SV *k = decode_sv (dec);
-          SV *v = decode_sv (dec);
-
-          hv_store_ent (hv, k, v, 0);
-          SvREFCNT_dec (k);
+          decode_he (dec, hv);
         }
     }
   else
     {
-      int len = decode_uint (dec);
+      int pairs = decode_uint (dec);
 
-      while (len--)
-        {
-          SV *k = decode_sv (dec);
-          SV *v = decode_sv (dec);
-
-          hv_store_ent (hv, k, v, 0);
-          SvREFCNT_dec (k);
-        }
+      while (pairs--)
+        decode_he (dec, hv);
     }
 
   DEC_DEC_DEPTH;
@@ -720,8 +744,14 @@ decode_tagged (dec_t *dec)
         PUSHs (*av_fetch (av, i, 1));
 
       PUTBACK;
-      call_sv ((SV *)GvCV (method), G_SCALAR);
+      call_sv ((SV *)GvCV (method), G_SCALAR | G_EVAL);
       SPAGAIN;
+
+      if (SvTRUE (ERRSV))
+        {
+          FREETMPS; LEAVE;
+          ERR (SvPVutf8_nolen (sv_2mortal (SvREFCNT_inc (ERRSV))));
+        }
 
       SvREFCNT_dec (sv);
       sv = SvREFCNT_inc (POPs);
@@ -846,45 +876,16 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
 {
   dec_t dec;
   SV *sv;
+  STRLEN len;
+  char *data = SvPVbyte (string, len);
 
-  /* work around bugs in 5.10 where manipulating magic values
-   * makes perl ignore the magic in subsequent accesses.
-   * also make a copy of non-PV values, to get them into a clean
-   * state (SvPV should do that, but it's buggy, see below).
-   */
-  /*SvGETMAGIC (string);*/
-  if (SvMAGICAL (string) || !SvPOK (string))
-    string = sv_2mortal (newSVsv (string));
-
-  SvUPGRADE (string, SVt_PV);
-
-  /* work around a bug in perl 5.10, which causes SvCUR to fail an
-   * assertion with -DDEBUGGING, although SvCUR is documented to
-   * return the xpv_cur field which certainly exists after upgrading.
-   * according to nicholas clark, calling SvPOK fixes this.
-   * But it doesn't fix it, so try another workaround, call SvPV_nolen
-   * and hope for the best.
-   * Damnit, SvPV_nolen still trips over yet another assertion. This
-   * assertion business is seriously broken, try yet another workaround
-   * for the broken -DDEBUGGING.
-   */
-  {
-#ifdef DEBUGGING
-    STRLEN offset = SvOK (string) ? sv_len (string) : 0;
-#else
-    STRLEN offset = SvCUR (string);
-#endif
-
-    if (offset > cbor->max_size && cbor->max_size)
-      croak ("attempted decode of CBOR text of %lu bytes size, but max_size is set to %lu",
-             (unsigned long)SvCUR (string), (unsigned long)cbor->max_size);
-  }
-
-  sv_utf8_downgrade (string, 0);
+  if (len > cbor->max_size && cbor->max_size)
+    croak ("attempted decode of CBOR text of %lu bytes size, but max_size is set to %lu",
+           (unsigned long)len, (unsigned long)cbor->max_size);
 
   dec.cbor  = *cbor;
-  dec.cur   = (U8 *)SvPVX (string);
-  dec.end   = (U8 *)SvEND (string);
+  dec.cur   = (U8 *)data;
+  dec.end   = (U8 *)data + len;
   dec.err   = 0;
   dec.depth = 0;
 
@@ -900,7 +901,7 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
   if (dec.err)
     {
       SvREFCNT_dec (sv);
-      croak ("%s, at offset %d (octet 0x%02x)", dec.err, dec.cur - (U8 *)SvPVX (string), (int)(uint8_t)*dec.cur);
+      croak ("%s, at offset %d (octet 0x%02x)", dec.err, dec.cur - (U8 *)data, (int)(uint8_t)*dec.cur);
     }
 
   sv = sv_2mortal (sv);
@@ -993,41 +994,6 @@ int get_max_size (CBOR *self)
 	OUTPUT:
         RETVAL
 
-#if 0 //TODO
-
-void filter_cbor_object (CBOR *self, SV *cb = &PL_sv_undef)
-	PPCODE:
-{
-        SvREFCNT_dec (self->cb_object);
-        self->cb_object = SvOK (cb) ? newSVsv (cb) : 0;
-
-        XPUSHs (ST (0));
-}
-
-void filter_cbor_single_key_object (CBOR *self, SV *key, SV *cb = &PL_sv_undef)
-	PPCODE:
-{
-	if (!self->cb_sk_object)
-          self->cb_sk_object = newHV ();
-
-        if (SvOK (cb))
-          hv_store_ent (self->cb_sk_object, key, newSVsv (cb), 0);
-        else
-          {
-            hv_delete_ent (self->cb_sk_object, key, G_DISCARD, 0);
-
-            if (!HvKEYS (self->cb_sk_object))
-              {
-                SvREFCNT_dec (self->cb_sk_object);
-                self->cb_sk_object = 0;
-              }
-          }
-
-        XPUSHs (ST (0));
-}
-
-#endif
-
 void encode (CBOR *self, SV *scalar)
 	PPCODE:
         PUTBACK; scalar = encode_cbor (scalar, self); SPAGAIN;
@@ -1048,15 +1014,6 @@ void decode_prefix (CBOR *self, SV *cborstr)
         PUSHs (sv);
         PUSHs (sv_2mortal (newSVuv (offset - SvPVX (cborstr))));
 }
-
-#if 0
-
-void DESTROY (CBOR *self)
-	CODE:
-        SvREFCNT_dec (self->cb_sk_object);
-        SvREFCNT_dec (self->cb_object);
-
-#endif
 
 PROTOTYPES: ENABLE
 
