@@ -11,6 +11,17 @@
 
 #include "ecb.h"
 
+// compatibility with perl <5.18
+#ifndef HvNAMELEN_get
+# define HvNAMELEN_get(hv) strlen (HvNAME (hv))
+#endif
+#ifndef HvNAMELEN
+# define HvNAMELEN(hv) HvNAMELEN_get (hv)
+#endif
+#ifndef HvNAMEUTF8
+# define HvNAMEUTF8(hv) 0
+#endif
+
 // known tags
 enum cbor_tag
 {
@@ -712,6 +723,7 @@ decode_tagged (dec_t *dec)
       call_sv ((SV *)GvCV (method), G_SCALAR);
       SPAGAIN;
 
+      SvREFCNT_dec (sv);
       sv = SvREFCNT_inc (POPs);
 
       PUTBACK;

@@ -1,5 +1,13 @@
 Revision history for Perl extension CBOR::XS
 
+TODO: cbor::xs::tagged methods
+TODO: G_EVAL for callbacks
+
+0.06  Tue Oct 29 16:56:07 CET 2013
+	- do not leak when deserialiasing via THAW.
+        - implement and document CBOR::XS creation/access/mutate
+          methods.
+
 0.05  Mon Oct 28 22:27:47 CET 2013
 	- do not leak hash keys on decoding.
 

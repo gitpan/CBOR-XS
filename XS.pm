@@ -44,7 +44,9 @@ can represent something in JSON, you should be able to represent it in
 CBOR.
 
 In short, CBOR is a faster and very compact binary alternative to JSON,
-with the added ability of supporting serialisation of Perl objects.
+with the added ability of supporting serialisation of Perl objects. (JSON
+often compresses better than CBOR though, so if you plan to compress the
+data later you might want to compare both formats first).
 
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
@@ -58,7 +60,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.05;
+our $VERSION = 0.06;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -229,8 +231,8 @@ error). See the L<Types::Serialiser> manpage for details.
 =item CBOR tag 256 (perl object)
 
 The tag value C<256> (TODO: pending iana registration) will be used
-to deserialise a Perl object serialised with C<FREEZE>. See "OBJECT
-SERIALISATION", below, for details.
+to deserialise a Perl object serialised with C<FREEZE>. See L<OBJECT
+SERIALISATION>, below, for details.
 
 =item CBOR tag 55799 (magic header)
 
@@ -283,8 +285,9 @@ C<1>, which get turned into false and true in CBOR.
 =item CBOR::XS::Tagged objects
 
 Objects of this type must be arrays consisting of a single C<[tag, value]>
-pair. The (numerical) tag will be encoded as a CBOR tag, the value will be
-encoded as appropriate for the value.
+pair. The (numerical) tag will be encoded as a CBOR tag, the value will
+be encoded as appropriate for the value. You cna use C<CBOR::XS::tag> to
+create such objects.
 
 =item Types::Serialiser::true, Types::Serialiser::false, Types::Serialiser::error
 
@@ -295,7 +298,7 @@ if you want.
 =item other blessed objects
 
 Other blessed objects are serialised via C<TO_CBOR> or C<FREEZE>. See
-"OBJECT SERIALISATION", below, for details.
+L<OBJECT SERIALISATION>, below, for details.
 
 =item simple scalars
 
@@ -453,6 +456,95 @@ prepend this string tot he CBOR data it generates, but it will ignroe it
 if present, so users can prepend this string as a "file type" indicator as
 required.
 
+
+=head1 THE CBOR::XS::Tagged CLASS
+
+CBOR has the concept of tagged values - any CBOR value can be tagged with
+a numeric 64 bit number, which are centrally administered.
+
+C<CBOR::XS> handles a few tags internally when en- or decoding. You can
+also create tags yourself by encoding C<CBOR::XS::Tagged> objects, and the
+decoder will create C<CBOR::XS::Tagged> objects itself when it hits an
+unknown tag.
+
+These objects are simply blessed array references - the first member of
+the array being the numerical tag, the second being the value.
+
+You can interact with C<CBOR::XS::Tagged> objects in the following ways:
+
+=over 4
+
+=item $tagged = CBOR::XS::tag $tag, $value
+
+This function(!) creates a new C<CBOR::XS::Tagged> object using the given
+C<$tag> (0..2**64-1) to tag the given C<$value> (which can be any Perl
+value that can be encoded in CBOR, including serialisable Perl objects and
+C<CBOR::XS::Tagged> objects).
+
+=item $tagged->[0]
+
+=item $tagged->[0] = $new_tag
+
+=item $tag = $tagged->tag
+
+=item $new_tag = $tagged->tag ($new_tag)
+
+Access/mutate the tag.
+
+=item $tagged->[1]
+
+=item $tagged->[1] = $new_value
+
+=item $value = $tagged->value
+
+=item $new_value = $tagged->value ($new_value)
+
+Access/mutate the tagged value.
+
+=back
+
+=cut
+
+sub tag($$) {
+   bless [@_], CBOR::XS::Tagged::;
+}
+
+sub CBOR::XS::Tagged::tag {
+   $_[0][0] = $_[1] if $#_;
+   $_[0][0]
+}
+
+sub CBOR::XS::Tagged::value {
+   $_[0][1] = $_[1] if $#_;
+   $_[0][1]
+}
+
+=head2 EXAMPLES
+
+Here are some examples of C<CBOR::XS::Tagged> uses to tag objects.
+
+You can look up CBOR tag value and emanings in the IANA registry at
+L<http://www.iana.org/assignments/cbor-tags/cbor-tags.xhtml>.
+
+Prepend a magic header (C<$CBOR::XS::MAGIC>):
+
+   my $cbor = encode_cbor CBOR::XS::tag 55799, $value;
+   # same as:
+   my $cbor = $CBOR::XS::MAGIC . encode_cbor $value;
+
+Serialise some URIs and a regex in an array:
+
+   my $cbor = encode_cbor [
+      (CBOR::XS::tag 32, "http://www.nethype.de/"),
+      (CBOR::XS::tag 32, "http://software.schmorp.de/"),
+      (CBOR::XS::tag 35, "^[Pp][Ee][Rr][lL]\$"),
+   ];
+
+Wrap CBOR data in CBOR:
+
+   my $cbor_cbor = encode_cbor
+      CBOR::XS::tag 24,
+         encode_cbor [1, 2, 3];
 
 =head1 CBOR and JSON
 

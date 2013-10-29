@@ -41,6 +41,8 @@ DESCRIPTION
 
     In short, CBOR is a faster and very compact binary alternative to JSON,
     with the added ability of supporting serialisation of Perl objects.
+    (JSON often compresses better than CBOR though, so if you plan to
+    compress the data later you might want to compare both formats first).
 
     The primary goal of this module is to be *correct* and the secondary
     goal is to be *fast*. To reach the latter goal it was written in C.
@@ -176,8 +178,8 @@ MAPPING
 
     CBOR tag 256 (perl object)
         The tag value 256 (TODO: pending iana registration) will be used to
-        deserialise a Perl object serialised with "FREEZE". See "OBJECT
-        SERIALISATION", below, for details.
+        deserialise a Perl object serialised with "FREEZE". See OBJECT
+        SERIALISATION, below, for details.
 
     CBOR tag 55799 (magic header)
         The tag 55799 is ignored (this tag implements the magic header).
@@ -220,7 +222,8 @@ MAPPING
     CBOR::XS::Tagged objects
         Objects of this type must be arrays consisting of a single "[tag,
         value]" pair. The (numerical) tag will be encoded as a CBOR tag, the
-        value will be encoded as appropriate for the value.
+        value will be encoded as appropriate for the value. You cna use
+        "CBOR::XS::tag" to create such objects.
 
     Types::Serialiser::true, Types::Serialiser::false,
     Types::Serialiser::error
@@ -381,6 +384,64 @@ MAGIC HEADER
     prepend this string tot he CBOR data it generates, but it will ignroe it
     if present, so users can prepend this string as a "file type" indicator
     as required.
+
+THE CBOR::XS::Tagged CLASS
+    CBOR has the concept of tagged values - any CBOR value can be tagged
+    with a numeric 64 bit number, which are centrally administered.
+
+    "CBOR::XS" handles a few tags internally when en- or decoding. You can
+    also create tags yourself by encoding "CBOR::XS::Tagged" objects, and
+    the decoder will create "CBOR::XS::Tagged" objects itself when it hits
+    an unknown tag.
+
+    These objects are simply blessed array references - the first member of
+    the array being the numerical tag, the second being the value.
+
+    You can interact with "CBOR::XS::Tagged" objects in the following ways:
+
+    $tagged = CBOR::XS::tag $tag, $value
+        This function(!) creates a new "CBOR::XS::Tagged" object using the
+        given $tag (0..2**64-1) to tag the given $value (which can be any
+        Perl value that can be encoded in CBOR, including serialisable Perl
+        objects and "CBOR::XS::Tagged" objects).
+
+    $tagged->[0]
+    $tagged->[0] = $new_tag
+    $tag = $tagged->tag
+    $new_tag = $tagged->tag ($new_tag)
+        Access/mutate the tag.
+
+    $tagged->[1]
+    $tagged->[1] = $new_value
+    $value = $tagged->value
+    $new_value = $tagged->value ($new_value)
+        Access/mutate the tagged value.
+
+  EXAMPLES
+    Here are some examples of "CBOR::XS::Tagged" uses to tag objects.
+
+    You can look up CBOR tag value and emanings in the IANA registry at
+    <http://www.iana.org/assignments/cbor-tags/cbor-tags.xhtml>.
+
+    Prepend a magic header ($CBOR::XS::MAGIC):
+
+       my $cbor = encode_cbor CBOR::XS::tag 55799, $value;
+       # same as:
+       my $cbor = $CBOR::XS::MAGIC . encode_cbor $value;
+
+    Serialise some URIs and a regex in an array:
+
+       my $cbor = encode_cbor [
+          (CBOR::XS::tag 32, "http://www.nethype.de/"),
+          (CBOR::XS::tag 32, "http://software.schmorp.de/"),
+          (CBOR::XS::tag 35, "^[Pp][Ee][Rr][lL]\$"),
+       ];
+
+    Wrap CBOR data in CBOR:
+
+       my $cbor_cbor = encode_cbor
+          CBOR::XS::tag 24,
+             encode_cbor [1, 2, 3];
 
 CBOR and JSON
     CBOR is supposed to implement a superset of the JSON data model, and is,
