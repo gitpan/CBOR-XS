@@ -26,8 +26,13 @@
 enum cbor_tag
 {
    // inofficial extensions (pending iana registration)
-   CBOR_TAG_PERL_OBJECT    = 256,
-   CBOR_TAG_GENERIC_OBJECT = 257,
+   CBOR_TAG_PERL_OBJECT         = 24, // http://cbor.schmorp.de/perl-object
+   CBOR_TAG_GENERIC_OBJECT      = 25, // http://cbor.schmorp.de/generic-object
+   CBOR_TAG_VALUE_SHAREABLE     = 26, // http://cbor.schmorp.de/value-sharing
+   CBOR_TAG_VALUE_SHAREDREF     = 27, // http://cbor.schmorp.de/value-sharing
+   CBOR_TAG_STRINGREF_NAMESPACE = 65537, // http://cbor.schmorp.de/stringref
+   CBOR_TAG_STRINGREF           = 28, // http://cbor.schmorp.de/stringref
+   CBOR_TAG_INDIRECTION		= 22098, // http://cbor.schmorp.de/indirection
 
    // rfc7049
    CBOR_TAG_DATETIME    =     0, // rfc4287, utf-8
@@ -51,8 +56,10 @@ enum cbor_tag
    CBOR_TAG_MAGIC       = 55799  // self-describe cbor
 };
 
-#define F_SHRINK         0x00000200UL
-#define F_ALLOW_UNKNOWN  0x00002000UL
+#define F_SHRINK          0x00000001UL
+#define F_ALLOW_UNKNOWN   0x00000002UL
+#define F_ALLOW_SHARING   0x00000004UL //TODO
+#define F_ALLOW_STRINGREF 0x00000008UL //TODO
 
 #define INIT_SIZE   32 // initial scalar size to be allocated
 
@@ -74,12 +81,13 @@ enum cbor_tag
 #endif
 
 static HV *cbor_stash, *types_boolean_stash, *types_error_stash, *cbor_tagged_stash; // CBOR::XS::
-static SV *types_true, *types_false, *types_error, *sv_cbor;
+static SV *types_true, *types_false, *types_error, *sv_cbor, *default_filter;
 
 typedef struct {
   U32 flags;
   U32 max_depth;
   STRLEN max_size;
+  SV *filter;
 } CBOR;
 
 ecb_inline void
@@ -87,6 +95,12 @@ cbor_init (CBOR *cbor)
 {
   Zero (cbor, 1, CBOR);
   cbor->max_depth = 512;
+}
+
+ecb_inline void
+cbor_free (CBOR *cbor)
+{
+  SvREFCNT_dec (cbor->filter);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -118,10 +132,20 @@ shrink (SV *sv)
     }
 }
 
-/////////////////////////////////////////////////////////////////////////////
-// fp hell
-
-//TODO
+// minimum length of a string to be registered for stringref
+ecb_inline int
+minimum_string_length (UV idx)
+{
+  return idx > 23
+         ? idx > 0xffU
+           ? idx > 0xffffU
+             ? idx > 0xffffffffU
+               ? 7
+               : 6
+             : 5
+           : 4
+         : 3;
+}
 
 /////////////////////////////////////////////////////////////////////////////
 // encoder
@@ -134,6 +158,10 @@ typedef struct
   SV *sv;     // result scalar
   CBOR cbor;
   U32 depth;  // recursion level
+  HV *stringref[2]; // string => index, or 0 ([0] = bytes, [1] = utf-8)
+  UV stringref_idx;
+  HV *shareable; // ptr => index, or 0
+  UV shareable_idx;
 } enc_t;
 
 ecb_inline void
@@ -195,9 +223,34 @@ encode_uint (enc_t *enc, int major, UV len)
      }
 }
 
+ecb_inline void
+encode_tag (enc_t *enc, UV tag)
+{
+  encode_uint (enc, 0xc0, tag);
+}
+
 static void
 encode_str (enc_t *enc, int utf8, char *str, STRLEN len)
 {
+  if (ecb_expect_false (enc->cbor.flags & F_ALLOW_STRINGREF))
+    {
+      SV **svp = hv_fetch (enc->stringref[!!utf8], str, len, 1);
+
+      if (SvOK (*svp))
+        {
+          // already registered, use stringref
+          encode_tag (enc, CBOR_TAG_STRINGREF);
+          encode_uint (enc, 0x00, SvUV (*svp));
+          return;
+        }
+      else if (len >= minimum_string_length (enc->stringref_idx))
+        {
+          // register only
+          sv_setuv (*svp, enc->stringref_idx);
+          ++enc->stringref_idx;
+        }
+    }
+
   encode_uint (enc, utf8 ? 0x60 : 0x40, len);
   need (enc, len);
   memcpy (enc->cur, str, len);
@@ -265,10 +318,31 @@ encode_hv (enc_t *enc, HV *hv)
 static void
 encode_rv (enc_t *enc, SV *sv)
 {
-  svtype svt;
-
   SvGETMAGIC (sv);
-  svt = SvTYPE (sv);
+
+  if (ecb_expect_false (enc->cbor.flags & F_ALLOW_SHARING)
+      && ecb_expect_false (SvREFCNT (sv) > 1))
+    {
+      if (!enc->shareable)
+        enc->shareable = (HV *)sv_2mortal ((SV *)newHV ());
+
+      SV **svp = hv_fetch (enc->shareable, (char *)&sv, sizeof (sv), 1);
+
+      if (SvOK (*svp))
+        {
+          encode_tag (enc, CBOR_TAG_VALUE_SHAREDREF);
+          encode_uint (enc, 0x00, SvUV (*svp));
+          return;
+        }
+      else
+        {
+          sv_setuv (*svp, enc->shareable_idx);
+          ++enc->shareable_idx;
+          encode_tag (enc, CBOR_TAG_VALUE_SHAREABLE);
+        }
+    }
+
+  svtype svt = SvTYPE (sv);
 
   if (ecb_expect_false (SvOBJECT (sv)))
     {
@@ -338,7 +412,7 @@ encode_rv (enc_t *enc, SV *sv)
           if (count == 1 && SvROK (TOPs) && SvRV (TOPs) == sv)
             croak ("%s::FREEZE(CBOR) method returned same object as was passed instead of a new one", HvNAME (stash));
 
-          encode_uint (enc, 0xc0, CBOR_TAG_PERL_OBJECT);
+          encode_tag (enc, CBOR_TAG_PERL_OBJECT);
           encode_uint (enc, 0x80, count + 1);
           encode_str (enc, HvNAMEUTF8 (stash), HvNAME (stash), HvNAMELEN (stash));
 
@@ -357,26 +431,11 @@ encode_rv (enc_t *enc, SV *sv)
     encode_hv (enc, (HV *)sv);
   else if (svt == SVt_PVAV)
     encode_av (enc, (AV *)sv);
-  else if (svt < SVt_PVAV)
-    {
-      STRLEN len = 0;
-      char *pv = svt ? SvPV (sv, len) : 0;
-
-      if (len == 1 && *pv == '1')
-        encode_ch (enc, 0xe0 | 21);
-      else if (len == 1 && *pv == '0')
-        encode_ch (enc, 0xe0 | 20);
-      else if (enc->cbor.flags & F_ALLOW_UNKNOWN)
-        encode_ch (enc, 0xe0 | 23);
-      else
-        croak ("cannot encode reference to scalar '%s' unless the scalar is 0 or 1",
-               SvPV_nolen (sv_2mortal (newRV_inc (sv))));
-    }
-  else if (enc->cbor.flags & F_ALLOW_UNKNOWN)
-    encode_ch (enc, 0xe0 | 23);
   else
-    croak ("encountered %s, but CBOR can only represent references to arrays or hashes",
-           SvPV_nolen (sv_2mortal (newRV_inc (sv))));
+    {
+      encode_tag (enc, CBOR_TAG_INDIRECTION);
+      encode_sv (enc, sv);
+    }
 }
 
 static void
@@ -451,15 +510,22 @@ encode_sv (enc_t *enc, SV *sv)
 static SV *
 encode_cbor (SV *scalar, CBOR *cbor)
 {
-  enc_t enc;
+  enc_t enc = { };
 
   enc.cbor      = *cbor;
   enc.sv        = sv_2mortal (NEWSV (0, INIT_SIZE));
   enc.cur       = SvPVX (enc.sv);
   enc.end       = SvEND (enc.sv);
-  enc.depth     = 0;
 
   SvPOK_only (enc.sv);
+
+  if (cbor->flags & F_ALLOW_STRINGREF)
+    {
+      encode_tag (&enc, CBOR_TAG_STRINGREF_NAMESPACE);
+      enc.stringref[0]= (HV *)sv_2mortal ((SV *)newHV ());
+      enc.stringref[1]= (HV *)sv_2mortal ((SV *)newHV ());
+    }
+
   encode_sv (&enc, scalar);
 
   SvCUR_set (enc.sv, enc.cur - SvPVX (enc.sv));
@@ -483,6 +549,9 @@ typedef struct
   CBOR cbor;
   U32 depth; // recursion depth
   U32 maxdepth; // recursion depth limit
+  AV *shareable;
+  AV *stringref;
+  SV *decode_tagged;
 } dec_t;
 
 #define ERR(reason) SB if (!dec->err) dec->err = reason; goto fail; SE
@@ -590,34 +659,43 @@ static void
 decode_he (dec_t *dec, HV *hv)
 {
   // for speed reasons, we specialcase single-string
-  // byte or utf-8 strings as keys.
+  // byte or utf-8 strings as keys, but only when !stringref
 
-  if (*dec->cur >= 0x40 && *dec->cur <= 0x40 + 27)
-    {
-      I32 len = decode_uint (dec);
-      char *key = (char *)dec->cur;
+  if (ecb_expect_true (!dec->stringref))
+    if (*dec->cur >= 0x40 && *dec->cur <= 0x40 + 27)
+      {
+        I32 len = decode_uint (dec);
+        char *key = (char *)dec->cur;
 
-      dec->cur += len;
+        dec->cur += len;
 
-      hv_store (hv, key,  len, decode_sv (dec), 0);
-    }
-  else if (*dec->cur >= 0x60 && *dec->cur <= 0x60 + 27)
-    {
-      I32 len = decode_uint (dec);
-      char *key = (char *)dec->cur;
+        if (ecb_expect_false (dec->stringref))
+          av_push (dec->stringref, newSVpvn (key, len));
 
-      dec->cur += len;
+        hv_store (hv, key,  len, decode_sv (dec), 0);
 
-      hv_store (hv, key, -len, decode_sv (dec), 0);
-    }
-  else
-    {
-      SV *k = decode_sv (dec);
-      SV *v = decode_sv (dec);
+        return;
+      }
+    else if (*dec->cur >= 0x60 && *dec->cur <= 0x60 + 27)
+      {
+        I32 len = decode_uint (dec);
+        char *key = (char *)dec->cur;
 
-      hv_store_ent (hv, k, v, 0);
-      SvREFCNT_dec (k);
-    }
+        dec->cur += len;
+
+        if (ecb_expect_false (dec->stringref))
+          av_push (dec->stringref, newSVpvn_utf8 (key, len, 1));
+
+        hv_store (hv, key, -len, decode_sv (dec), 0);
+
+        return;
+      }
+
+  SV *k = decode_sv (dec);
+  SV *v = decode_sv (dec);
+
+  hv_store_ent (hv, k, v, 0);
+  SvREFCNT_dec (k);
 }
 
 static SV *
@@ -693,6 +771,10 @@ decode_str (dec_t *dec, int utf8)
       WANT (len);
       sv = newSVpvn (dec->cur, len);
       dec->cur += len;
+
+      if (ecb_expect_false (dec->stringref)
+          && SvCUR (sv) >= minimum_string_length (AvFILLp (dec->stringref) + 1))
+        av_push (dec->stringref, SvREFCNT_inc_NN (sv));
     }
 
   if (utf8)
@@ -708,72 +790,172 @@ fail:
 static SV *
 decode_tagged (dec_t *dec)
 {
+  SV *sv = 0;
   UV tag = decode_uint (dec);
-  SV *sv = decode_sv (dec);
 
-  if (tag == CBOR_TAG_MAGIC)
-    return sv;
-  else if (tag == CBOR_TAG_PERL_OBJECT)
+  WANT (1);
+
+  switch (tag)
     {
-      if (!SvROK (sv) || SvTYPE (SvRV (sv)) != SVt_PVAV)
-        ERR ("corrupted CBOR data (non-array perl object)");
+      case CBOR_TAG_MAGIC:
+        sv = decode_sv (dec);
+        break;
 
-      AV *av = (AV *)SvRV (sv);
-      int len = av_len (av) + 1;
-      HV *stash = gv_stashsv (*av_fetch (av, 0, 1), 0);
+      case CBOR_TAG_INDIRECTION:
+        sv = newRV_noinc (decode_sv (dec));
+        break;
 
-      if (!stash)
-        ERR ("cannot decode perl-object (package does not exist)");
-
-      GV *method = gv_fetchmethod_autoload (stash, "THAW", 0);
-      
-      if (!method)
-        ERR ("cannot decode perl-object (package does not have a THAW method)");
-      
-      dSP;
-
-      ENTER; SAVETMPS; PUSHMARK (SP);
-      EXTEND (SP, len + 1);
-      // we re-bless the reference to get overload and other niceties right
-      PUSHs (*av_fetch (av, 0, 1));
-      PUSHs (sv_cbor);
-
-      int i;
-
-      for (i = 1; i < len; ++i)
-        PUSHs (*av_fetch (av, i, 1));
-
-      PUTBACK;
-      call_sv ((SV *)GvCV (method), G_SCALAR | G_EVAL);
-      SPAGAIN;
-
-      if (SvTRUE (ERRSV))
+      case CBOR_TAG_STRINGREF_NAMESPACE:
         {
+          ENTER; SAVETMPS;
+
+          SAVESPTR (dec->stringref);
+          dec->stringref = (AV *)sv_2mortal ((SV *)newAV ());
+
+          sv = decode_sv (dec);
+
           FREETMPS; LEAVE;
-          ERR (SvPVutf8_nolen (sv_2mortal (SvREFCNT_inc (ERRSV))));
         }
+        break;
 
-      SvREFCNT_dec (sv);
-      sv = SvREFCNT_inc (POPs);
+      case CBOR_TAG_STRINGREF:
+        {
+          if ((*dec->cur >> 5) != 0)
+            ERR ("corrupted CBOR data (stringref index not an unsigned integer)");
 
-      PUTBACK;
+          UV idx = decode_uint (dec);
 
-      FREETMPS; LEAVE;
+          if (!dec->stringref || (int)idx > AvFILLp (dec->stringref))
+            ERR ("corrupted CBOR data (stringref index out of bounds or outside namespace)");
 
-      return sv;
+          sv = newSVsv (AvARRAY (dec->stringref)[idx]);
+        }
+        break;
+
+      case CBOR_TAG_VALUE_SHAREABLE:
+        {
+          if (ecb_expect_false (!dec->shareable))
+            dec->shareable = (AV *)sv_2mortal ((SV *)newAV ());
+
+          sv = newSV (0);
+          av_push (dec->shareable, SvREFCNT_inc_NN (sv));
+
+          SV *osv = decode_sv (dec);
+          sv_setsv (sv, osv);
+          SvREFCNT_dec_NN (osv);
+        }
+        break;
+
+      case CBOR_TAG_VALUE_SHAREDREF:
+        {
+          if ((*dec->cur >> 5) != 0)
+            ERR ("corrupted CBOR data (sharedref index not an unsigned integer)");
+
+          UV idx = decode_uint (dec);
+
+          if (!dec->shareable || (int)idx > AvFILLp (dec->shareable))
+            ERR ("corrupted CBOR data (sharedref index out of bounds)");
+
+          sv = SvREFCNT_inc_NN (AvARRAY (dec->shareable)[idx]);
+        }
+        break;
+
+      case CBOR_TAG_PERL_OBJECT:
+        {
+          sv = decode_sv (dec);
+
+          if (!SvROK (sv) || SvTYPE (SvRV (sv)) != SVt_PVAV)
+            ERR ("corrupted CBOR data (non-array perl object)");
+
+          AV *av = (AV *)SvRV (sv);
+          int len = av_len (av) + 1;
+          HV *stash = gv_stashsv (*av_fetch (av, 0, 1), 0);
+
+          if (!stash)
+            ERR ("cannot decode perl-object (package does not exist)");
+
+          GV *method = gv_fetchmethod_autoload (stash, "THAW", 0);
+          
+          if (!method)
+            ERR ("cannot decode perl-object (package does not have a THAW method)");
+          
+          dSP;
+
+          ENTER; SAVETMPS; PUSHMARK (SP);
+          EXTEND (SP, len + 1);
+          // we re-bless the reference to get overload and other niceties right
+          PUSHs (*av_fetch (av, 0, 1));
+          PUSHs (sv_cbor);
+
+          int i;
+
+          for (i = 1; i < len; ++i)
+            PUSHs (*av_fetch (av, i, 1));
+
+          PUTBACK;
+          call_sv ((SV *)GvCV (method), G_SCALAR | G_EVAL);
+          SPAGAIN;
+
+          if (SvTRUE (ERRSV))
+            {
+              FREETMPS; LEAVE;
+              ERR (SvPVutf8_nolen (sv_2mortal (SvREFCNT_inc (ERRSV))));
+            }
+
+          SvREFCNT_dec (sv);
+          sv = SvREFCNT_inc (POPs);
+
+          PUTBACK;
+
+          FREETMPS; LEAVE;
+        }
+        break;
+
+      default:
+        {
+          sv = decode_sv (dec);
+
+          dSP;
+          ENTER; SAVETMPS; PUSHMARK (SP);
+          EXTEND (SP, 2);
+          PUSHs (newSVuv (tag));
+          PUSHs (sv);
+
+          PUTBACK;
+          int count = call_sv (dec->cbor.filter ? dec->cbor.filter : default_filter, G_ARRAY | G_EVAL);
+          SPAGAIN;
+
+          if (SvTRUE (ERRSV))
+            {
+              FREETMPS; LEAVE;
+              ERR (SvPVutf8_nolen (sv_2mortal (SvREFCNT_inc (ERRSV))));
+            }
+
+          if (count)
+            {
+              SvREFCNT_dec (sv);
+              sv = SvREFCNT_inc (POPs);
+            }
+          else
+            {
+              AV *av = newAV ();
+              av_push (av, newSVuv (tag));
+              av_push (av, sv);
+
+              HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
+                                  ? cbor_tagged_stash
+                                  : gv_stashpv ("CBOR::XS::Tagged" , 1);
+              sv = sv_bless (newRV_noinc ((SV *)av), tagged_stash);
+            }
+
+          PUTBACK;
+
+          FREETMPS; LEAVE;
+        }
+        break;
     }
-  else
-    {
-      AV *av = newAV ();
-      av_push (av, newSVuv (tag));
-      av_push (av, sv);
 
-      HV *tagged_stash  = !CBOR_SLOW || cbor_tagged_stash
-                          ? cbor_tagged_stash
-                          : gv_stashpv ("CBOR::XS::Tagged" , 1);
-
-      return sv_bless (newRV_noinc ((SV *)av), tagged_stash);
-    }
+  return sv;
 
 fail:
   SvREFCNT_dec (sv);
@@ -874,7 +1056,7 @@ fail:
 static SV *
 decode_cbor (SV *string, CBOR *cbor, char **offset_return)
 {
-  dec_t dec;
+  dec_t dec = { };
   SV *sv;
   STRLEN len;
   char *data = SvPVbyte (string, len);
@@ -886,8 +1068,6 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
   dec.cbor  = *cbor;
   dec.cur   = (U8 *)data;
   dec.end   = (U8 *)data + len;
-  dec.err   = 0;
-  dec.depth = 0;
 
   sv = decode_sv (&dec);
 
@@ -926,6 +1106,8 @@ BOOT:
         types_false = get_bool ("Types::Serialiser::false");
         types_error = get_bool ("Types::Serialiser::error");
 
+        default_filter = newSVpv ("CBOR::XS::default_filter", 0);
+
         sv_cbor = newSVpv ("CBOR", 0);
         SvREADONLY_on (sv_cbor);
 }
@@ -955,6 +1137,8 @@ void shrink (CBOR *self, int enable = 1)
 	ALIAS:
         shrink          = F_SHRINK
         allow_unknown   = F_ALLOW_UNKNOWN
+        allow_sharing   = F_ALLOW_SHARING
+        allow_stringref = F_ALLOW_STRINGREF
 	PPCODE:
 {
         if (enable)
@@ -969,6 +1153,8 @@ void get_shrink (CBOR *self)
 	ALIAS:
         get_shrink          = F_SHRINK
         get_allow_unknown   = F_ALLOW_UNKNOWN
+        get_allow_sharing   = F_ALLOW_SHARING
+        get_allow_stringref = F_ALLOW_STRINGREF
 	PPCODE:
         XPUSHs (boolSV (self->flags & ix));
 
@@ -994,6 +1180,18 @@ int get_max_size (CBOR *self)
 	OUTPUT:
         RETVAL
 
+void filter (CBOR *self, SV *filter = 0)
+	PPCODE:
+        SvREFCNT_dec (self->filter);
+        self->filter = filter ? newSVsv (filter) : filter;
+        XPUSHs (ST (0));
+
+SV *get_filter (CBOR *self)
+	CODE:
+        RETVAL = self->filter ? self->filter : NEWSV (0, 0);
+	OUTPUT:
+        RETVAL
+
 void encode (CBOR *self, SV *scalar)
 	PPCODE:
         PUTBACK; scalar = encode_cbor (scalar, self); SPAGAIN;
@@ -1014,6 +1212,10 @@ void decode_prefix (CBOR *self, SV *cborstr)
         PUSHs (sv);
         PUSHs (sv_2mortal (newSVuv (offset - SvPVX (cborstr))));
 }
+
+void DESTROY (CBOR *self)
+	PPCODE:
+	cbor_free (self);
 
 PROTOTYPES: ENABLE
 

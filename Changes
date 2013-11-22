@@ -1,5 +1,17 @@
 Revision history for Perl extension CBOR::XS
 
+TODO: stringref for hash keys only?
+
+0.09  Fri Nov 22 16:54:18 CET 2013
+	- bignum/bigfloat/decimal support.
+        - uri support.
+        - tag filter functions support for decoding.
+	- do not support reference-to-1/0/undef anymore, you need to use
+          the Types::Serialiser objects now.
+        - experimental sharable extension support (http://cbor.schmorp.de/value-sharing).
+        - experimental stringref extension support (http://cbor.schmorp.de/stringref).
+	- implement indirection tag (http://cbor.schmorp.de/indirection).
+
 0.08  Wed Oct 30 11:10:43 CET 2013
 	- defused another too fragile test.
 

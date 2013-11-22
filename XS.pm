@@ -28,12 +28,12 @@ CBOR::XS - Concise Binary Object Representation (CBOR, RFC7049)
 
 =head1 DESCRIPTION
 
-WARNING! This module is very new, and not very well tested (that's up to
-you to do). Furthermore, details of the implementation might change freely
-before version 1.0. And lastly, the object serialisation protocol depends
-on a pending IANA assignment, and until that assignment is official, this
-implementation is not interoperable with other implementations (even
-future versions of this module) until the assignment is done.
+WARNING! This module is very new, and not very well tested (that's up
+to you to do). Furthermore, details of the implementation might change
+freely before version 1.0. And lastly, most extensions depend on an IANA
+assignment, and until that assignment is official, this implementation is
+not interoperable with other implementations (even future versions of this
+module) until the assignment is done.
 
 You are still invited to try out CBOR, and this module.
 
@@ -56,6 +56,11 @@ data, the worse L<Storable> performs in comparison.
 As for compactness, C<CBOR::XS> encoded data structures are usually about
 20% smaller than the same data encoded as (compact) JSON or L<Storable>.
 
+In addition to the core CBOR data format, this module implements a number
+of extensions, to support cyclic and self-referencing data structures
+(see C<allow_sharing>), string deduplication (see C<allow_stringref>) and
+scalar references (always enabled).
+
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
 
@@ -68,7 +73,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.08;
+our $VERSION = 0.09;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -115,7 +120,6 @@ strings. All boolean flags described below are by default I<disabled>.
 The mutators for flags all return the CBOR object again and thus calls can
 be chained:
 
-#TODO
    my $cbor = CBOR::XS->new->encode ({a => [1,2]});
 
 =item $cbor = $cbor->max_depth ([$maximum_nesting_depth])
@@ -158,6 +162,115 @@ If no argument is given, the limit check will be deactivated (same as when
 C<0> is specified).
 
 See SECURITY CONSIDERATIONS, below, for more info on why this is useful.
+
+=item $cbor = $cbor->allow_unknown ([$enable])
+
+=item $enabled = $cbor->get_allow_unknown
+
+If C<$enable> is true (or missing), then C<encode> will I<not> throw an
+exception when it encounters values it cannot represent in CBOR (for
+example, filehandles) but instead will encode a CBOR C<error> value.
+
+If C<$enable> is false (the default), then C<encode> will throw an
+exception when it encounters anything it cannot encode as CBOR.
+
+This option does not affect C<decode> in any way, and it is recommended to
+leave it off unless you know your communications partner.
+
+=item $cbor = $cbor->allow_sharing ([$enable])
+
+=item $enabled = $cbor->get_allow_sharing
+
+If C<$enable> is true (or missing), then C<encode> will not double-encode
+values that have been referenced before (e.g. when the same object, such
+as an array, is referenced multiple times), but instead will emit a
+reference to the earlier value.
+
+This means that such values will only be encoded once, and will not result
+in a deep cloning of the value on decode, in decoders supporting the value
+sharing extension.
+
+It is recommended to leave it off unless you know your
+communication partner supports the value sharing extensions to CBOR
+(http://cbor.schmorp.de/value-sharing).
+
+Detecting shared values incurs a runtime overhead when values are encoded
+that have a reference counter large than one, and might unnecessarily
+increase the encoded size, as potentially shared values are encode as
+sharable whether or not they are actually shared.
+
+At the moment, only targets of references can be shared (e.g. scalars,
+arrays or hashes pointed to by a reference). Weirder constructs, such as
+an array with multiple "copies" of the I<same> string, which are hard but
+not impossible to create in Perl, are not supported (this is the same as
+for L<Storable>).
+
+If C<$enable> is false (the default), then C<encode> will encode
+exception when it encounters anything it cannot encode as CBOR.
+
+This option does not affect C<decode> in any way - shared values and
+references will always be decoded properly if present.
+
+=item $cbor = $cbor->allow_stringref ([$enable])
+
+=item $enabled = $cbor->get_allow_stringref
+
+If C<$enable> is true (or missing), then C<encode> will try not to encode
+the same string twice, but will instead encode a reference to the string
+instead. Depending on your data format. this can save a lot of space, but
+also results in a very large runtime overhead (expect encoding times to be
+2-4 times as high as without).
+
+It is recommended to leave it off unless you know your
+communications partner supports the stringref extension to CBOR
+(http://cbor.schmorp.de/stringref).
+
+If C<$enable> is false (the default), then C<encode> will encode
+exception when it encounters anything it cannot encode as CBOR.
+
+This option does not affect C<decode> in any way - string references will
+always be decoded properly if present.
+
+=item $cbor = $cbor->filter ([$cb->($tag, $value)])
+
+=item $cb_or_undef = $cbor->get_filter
+
+Sets or replaces the tagged value decoding filter (when C<$cb> is
+specified) or clears the filter (if no argument or C<undef> is provided).
+
+The filter callback is called only during decoding, when a non-enforced
+tagged value has been decoded (see L<TAG HANDLING AND EXTENSIONS> for a
+list of enforced tags). For specific tags, it's often better to provide a
+default converter using the C<%CBOR::XS::FILTER> hash (see below).
+
+The first argument is the numerical tag, the second is the (decoded) value
+that has been tagged.
+
+The filter function should return either exactly one value, which will
+replace the tagged value in the decoded data structure, or no values,
+which will result in default handling, which currently means the decoder
+creates a C<CBOR::XS::Tagged> object to hold the tag and the value.
+
+When the filter is cleared (the default state), the default filter
+function, C<CBOR::XS::default_filter>, is used. This function simply looks
+up the tag in the C<%CBOR::XS::FILTER> hash. If an entry exists it must be
+a code reference that is called with tag and value, and is responsible for
+decoding the value. If no entry exists, it returns no values.
+
+Example: decode all tags not handled internally into CBOR::XS::Tagged
+objects, with no other special handling (useful when working with
+potentially "unsafe" CBOR data).
+
+   CBOR::XS->new->filter (sub { })->decode ($cbor_data);
+
+Example: provide a global filter for tag 1347375694, converting the value
+into some string form.
+
+   $CBOR::XS::FILTER{1347375694} = sub {
+      my ($tag, $value);
+
+      "tag 1347375694 value $value"
+   };
 
 =item $cbor_data = $cbor->encode ($perl_scalar)
 
@@ -236,24 +349,12 @@ respectively. They are overloaded to act almost exactly like the numbers
 C<1> and C<0> (for true and false) or to throw an exception on access (for
 error). See the L<Types::Serialiser> manpage for details.
 
-=item CBOR tag 256 (perl object)
+=item tagged values
 
-The tag value C<256> (TODO: pending iana registration) will be used
-to deserialise a Perl object serialised with C<FREEZE>. See L<OBJECT
-SERIALISATION>, below, for details.
+Tagged items consists of a numeric tag and another CBOR value.
 
-=item CBOR tag 55799 (magic header)
-
-The tag 55799 is ignored (this tag implements the magic header).
-
-=item other CBOR tags
-
-Tagged items consists of a numeric tag and another CBOR value. Tags not
-handled internally are currently converted into a L<CBOR::XS::Tagged>
-object, which is simply a blessed array reference consisting of the
-numeric tag value followed by the (decoded) CBOR value.
-
-In the future, support for user-supplied conversions might get added.
+See L<TAG HANDLING AND EXTENSIONS> and the description of C<< ->filter >>
+for details.
 
 =item anything else
 
@@ -306,11 +407,11 @@ if you want.
 =item other blessed objects
 
 Other blessed objects are serialised via C<TO_CBOR> or C<FREEZE>. See
-L<OBJECT SERIALISATION>, below, for details.
+L<TAG HANDLING AND EXTENSIONS> for specific classes handled by this
+module, and L<OBJECT SERIALISATION> for generic object serialisation.
 
 =item simple scalars
 
-TODO
 Simple Perl scalars (any scalar that is not a reference) are the most
 difficult objects to encode: CBOR::XS will encode undefined scalars as
 CBOR null values, scalars that have last been used in a string context
@@ -457,10 +558,10 @@ would cause an invocation of C<THAW> with 5 arguments:
 There is no way to distinguish CBOR from other formats
 programmatically. To make it easier to distinguish CBOR from other
 formats, the CBOR specification has a special "magic string" that can be
-prepended to any CBOR string without changing it's meaning.
+prepended to any CBOR string without changing its meaning.
 
 This string is available as C<$CBOR::XS::MAGIC>. This module does not
-prepend this string tot he CBOR data it generates, but it will ignroe it
+prepend this string to the CBOR data it generates, but it will ignore it
 if present, so users can prepend this string as a "file type" indicator as
 required.
 
@@ -554,6 +655,147 @@ Wrap CBOR data in CBOR:
       CBOR::XS::tag 24,
          encode_cbor [1, 2, 3];
 
+=head1 TAG HANDLING AND EXTENSIONS
+
+This section describes how this module handles specific tagged values
+and extensions. If a tag is not mentioned here and no additional filters
+are provided for it, then the default handling applies (creating a
+CBOR::XS::Tagged object on decoding, and only encoding the tag when
+explicitly requested).
+
+Tags not handled specifically are currently converted into a
+L<CBOR::XS::Tagged> object, which is simply a blessed array reference
+consisting of the numeric tag value followed by the (decoded) CBOR value.
+
+Future versions of this module reserve the right to special case
+additional tags (such as base64url).
+
+=head2 ENFORCED TAGS
+
+These tags are always handled when decoding, and their handling cannot be
+overriden by the user.
+
+=over 4
+
+=item <unassigned> (perl-object, L<http://cbor.schmorp.de/perl-object>)
+
+These tags are automatically created (and decoded) for serialisable
+objects using the C<FREEZE/THAW> methods (the L<Types::Serialier> object
+serialisation protocol). See L<OBJECT SERIALISATION> for details.
+
+=item <unassigned>, <unassigned> (sharable, sharedref, L <http://cbor.schmorp.de/value-sharing>)
+
+These tags are automatically decoded when encountered, resulting in
+shared values in the decoded object. They are only encoded, however, when
+C<allow_sharable> is enabled.
+
+=item <unassigned>, <unassigned> (stringref-namespace, stringref, L <http://cbor.schmorp.de/stringref>)
+
+These tags are automatically decoded when encountered. They are only
+encoded, however, when C<allow_stringref> is enabled.
+
+=item 22098 (indirection, L<http://cbor.schmorp.de/indirection>)
+
+This tag is automatically generated when a reference are encountered (with
+the exception of hash and array refernces). It is converted to a reference
+when decoding.
+
+=item 55799 (self-describe CBOR, RFC 7049)
+
+This value is not generated on encoding (unless explicitly requested by
+the user), and is simply ignored when decoding.
+
+=back
+
+=head2 NON-ENFORCED TAGS
+
+These tags have default filters provided when decoding. Their handling can
+be overriden by changing the C<%CBOR::XS::FILTER> entry for the tag, or by
+providing a custom C<filter> callback when decoding.
+
+When they result in decoding into a specific Perl class, the module
+usually provides a corresponding C<TO_CBOR> method as well.
+
+When any of these need to load additional modules that are not part of the
+perl core distribution (e.g. L<URI>), it is (currently) up to the user to
+provide these modules. The decoding usually fails with an exception if the
+required module cannot be loaded.
+
+=over 4
+
+=item 2, 3 (positive/negative bignum)
+
+These tags are decoded into L<Math::BigInt> objects. The corresponding
+C<Math::BigInt::TO_CBOR> method encodes "small" bigints into normal CBOR
+integers, and others into positive/negative CBOR bignums.
+
+=item 4, 5 (decimal fraction/bigfloat)
+
+Both decimal fractions and bigfloats are decoded into L<Math::BigFloat>
+objects. The corresponding C<Math::BigFloat::TO_CBOR> method I<always>
+encodes into a decimal fraction.
+
+CBOR cannot represent bigfloats with I<very> large exponents - conversion
+of such big float objects is undefined.
+
+Also, NaN and infinities are not encoded properly.
+
+=item 21, 22, 23 (expected later JSON conversion)
+
+CBOR::XS is not a CBOR-to-JSON converter, and will simply ignore these
+tags.
+
+=item 32 (URI)
+
+These objects decode into L<URI> objects. The corresponding
+C<URI::TO_CBOR> method again results in a CBOR URI value.
+
+=back
+
+=cut
+
+our %FILTER = (
+   # 0 # rfc4287 datetime, utf-8
+   # 1 # unix timestamp, any
+
+   2 => sub { # pos bigint
+      require Math::BigInt;
+      Math::BigInt->new ("0x" . unpack "H*", pop)
+   },
+
+   3 => sub { # neg bigint
+      require Math::BigInt;
+      -Math::BigInt->new ("0x" . unpack "H*", pop)
+   },
+
+   4 => sub { # decimal fraction, array
+      require Math::BigFloat;
+      Math::BigFloat->new ($_[1][1] . "E" . $_[1][0])
+   },
+
+   5 => sub { # bigfloat, array
+      require Math::BigFloat;
+      scalar Math::BigFloat->new ($_[1][1])->blsft ($_[1][0], 2)
+   },
+
+   21 => sub { pop }, # expected conversion to base64url encoding
+   22 => sub { pop }, # expected conversion to base64 encoding
+   23 => sub { pop }, # expected conversion to base16 encoding
+
+   # 24 # embedded cbor, byte string
+
+   32 => sub {
+      require URI;
+      URI->new (pop)
+   },
+
+   # 33 # base64url rfc4648, utf-8
+   # 34 # base64 rfc46484, utf-8
+   # 35 # regex pcre/ecma262, utf-8
+   # 36 # mime message rfc2045, utf-8
+);
+
+
 =head1 CBOR and JSON
 
 CBOR is supposed to implement a superset of the JSON data model, and is,
@@ -643,6 +885,72 @@ Please refrain from using rt.cpan.org or any other bug reporting
 service. I put the contact address into my modules for a reason.
 
 =cut
+
+our %FILTER = (
+   # 0 # rfc4287 datetime, utf-8
+   # 1 # unix timestamp, any
+
+   2 => sub { # pos bigint
+      require Math::BigInt;
+      Math::BigInt->new ("0x" . unpack "H*", pop)
+   },
+
+   3 => sub { # neg bigint
+      require Math::BigInt;
+      -Math::BigInt->new ("0x" . unpack "H*", pop)
+   },
+
+   4 => sub { # decimal fraction, array
+      require Math::BigFloat;
+      Math::BigFloat->new ($_[1][1] . "E" . $_[1][0])
+   },
+
+   5 => sub { # bigfloat, array
+      require Math::BigFloat;
+      scalar Math::BigFloat->new ($_[1][1])->blsft ($_[1][0], 2)
+   },
+
+   21 => sub { pop }, # expected conversion to base64url encoding
+   22 => sub { pop }, # expected conversion to base64 encoding
+   23 => sub { pop }, # expected conversion to base16 encoding
+
+   # 24 # embedded cbor, byte string
+
+   32 => sub {
+      require URI;
+      URI->new (pop)
+   },
+
+   # 33 # base64url rfc4648, utf-8
+   # 34 # base64 rfc46484, utf-8
+   # 35 # regex pcre/ecma262, utf-8
+   # 36 # mime message rfc2045, utf-8
+);
+
+sub CBOR::XS::default_filter {
+   &{ $FILTER{$_[0]} or return }
+}
+
+sub URI::TO_CBOR {
+   my $uri = $_[0]->as_string;
+   utf8::upgrade $uri;
+   CBOR::XS::tag 32, $uri
+}
+
+sub Math::BigInt::TO_CBOR {
+   if ($_[0] >= -2147483648 && $_[0] <= 2147483647) {
+      $_[0]->numify
+   } else {
+      my $hex = substr $_[0]->as_hex, 2;
+      $hex = "0$hex" if 1 & length $hex; # sigh
+      CBOR::XS::tag $_[0] >= 0 ? 2 : 3, pack "H*", $hex
+   }
+}
+
+sub Math::BigFloat::TO_CBOR {
+   my ($m, $e) = $_[0]->parts;
+   CBOR::XS::tag 4, [$e->numify, $m]
+}
 
 XSLoader::load "CBOR::XS", $VERSION;
 

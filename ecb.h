@@ -1,7 +1,7 @@
 /*
  * libecb - http://software.schmorp.de/pkg/libecb
  *
- * Copyright (©) 2009-2012 Marc Alexander Lehmann <libecb@schmorp.de>
+ * Copyright (©) 2009-2013 Marc Alexander Lehmann <libecb@schmorp.de>
  * Copyright (©) 2011 Emanuele Giaquinta
  * All rights reserved.
  *
@@ -589,10 +589,17 @@ ecb_inline ecb_bool ecb_little_endian (void) { return ecb_byteorder_helper () ==
 
   #include <math.h> /* for frexp*, ldexp*, INFINITY, NAN */
 
-  #ifdef NEN
+  /* only the oldest of old doesn't have this one. solaris. */
+  #ifdef INFINITY
+    #define ECB_INFINITY INFINITY
+  #else
+    #define ECB_INFINITY HUGE_VAL
+  #endif
+
+  #ifdef NAN
     #define ECB_NAN NAN
   #else
-    #define ECB_NAN INFINITY
+    #define ECB_NAN ECB_INFINITY
   #endif
 
   /* converts an ieee half/binary16 to a float */
@@ -607,7 +614,7 @@ ecb_inline ecb_bool ecb_little_endian (void) { return ecb_byteorder_helper () ==
     if      (!e     ) r = ldexpf (m        ,    -24);
     else if (e != 31) r = ldexpf (m + 0x400, e - 25);
     else if (m      ) r = ECB_NAN;
-    else              r = INFINITY;
+    else              r = ECB_INFINITY;
 
     return x & 0x8000 ? -r : r;
   }

@@ -41,7 +41,7 @@ sub CBOR::XS::freeze::THAW {
 
 $obj = bless { k => 1 }, CBOR::XS::freeze::;
 $enc = encode_cbor $obj;
-print $enc eq (pack "H*", "d90100845043424f523a3a58533a3a667265657a65030102") ? "" : "not ", "ok 12\n";
+print $enc eq (pack "H*", "d818845043424f523a3a58533a3a667265657a65030102") ? "" : "not ", "ok 12 ", (unpack "H*", $enc), "\n";
 
 $dec = decode_cbor $enc;
 print $dec eq 777 ? "" : "not ", "ok 19\n";

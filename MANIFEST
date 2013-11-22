@@ -11,6 +11,7 @@ t/00_load.t
 t/50_rfc.t
 t/51_types.t
 t/52_object.t
+t/53_bignum.t
 t/99_binary.t
 META.yml                                 Module YAML meta-data (added by MakeMaker)
 META.json                                Module JSON meta-data (added by MakeMaker)
