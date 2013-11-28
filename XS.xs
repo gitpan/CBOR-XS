@@ -21,17 +21,20 @@
 #ifndef HvNAMEUTF8
 # define HvNAMEUTF8(hv) 0
 #endif
+#ifndef SvREFCNT_dec_NN
+# define SvREFCNT_dec_NN(sv) SvREFCNT_dec (sv)
+#endif
 
 // known tags
 enum cbor_tag
 {
-   // inofficial extensions (pending iana registration)
-   CBOR_TAG_PERL_OBJECT         = 24, // http://cbor.schmorp.de/perl-object
-   CBOR_TAG_GENERIC_OBJECT      = 25, // http://cbor.schmorp.de/generic-object
-   CBOR_TAG_VALUE_SHAREABLE     = 26, // http://cbor.schmorp.de/value-sharing
-   CBOR_TAG_VALUE_SHAREDREF     = 27, // http://cbor.schmorp.de/value-sharing
-   CBOR_TAG_STRINGREF_NAMESPACE = 65537, // http://cbor.schmorp.de/stringref
-   CBOR_TAG_STRINGREF           = 28, // http://cbor.schmorp.de/stringref
+   // extensions
+   CBOR_TAG_STRINGREF           = 25, // http://cbor.schmorp.de/stringref
+   CBOR_TAG_PERL_OBJECT         = 26, // http://cbor.schmorp.de/perl-object
+   CBOR_TAG_GENERIC_OBJECT      = 27, // http://cbor.schmorp.de/generic-object
+   CBOR_TAG_VALUE_SHAREABLE     = 28, // http://cbor.schmorp.de/value-sharing
+   CBOR_TAG_VALUE_SHAREDREF     = 29, // http://cbor.schmorp.de/value-sharing
+   CBOR_TAG_STRINGREF_NAMESPACE = 256, // http://cbor.schmorp.de/stringref
    CBOR_TAG_INDIRECTION		= 22098, // http://cbor.schmorp.de/indirection
 
    // rfc7049
@@ -58,8 +61,8 @@ enum cbor_tag
 
 #define F_SHRINK          0x00000001UL
 #define F_ALLOW_UNKNOWN   0x00000002UL
-#define F_ALLOW_SHARING   0x00000004UL //TODO
-#define F_ALLOW_STRINGREF 0x00000008UL //TODO
+#define F_ALLOW_SHARING   0x00000004UL
+#define F_PACK_STRINGS    0x00000008UL
 
 #define INIT_SIZE   32 // initial scalar size to be allocated
 
@@ -140,8 +143,8 @@ minimum_string_length (UV idx)
          ? idx > 0xffU
            ? idx > 0xffffU
              ? idx > 0xffffffffU
-               ? 7
-               : 6
+               ? 11
+               : 7
              : 5
            : 4
          : 3;
@@ -188,9 +191,9 @@ encode_uint (enc_t *enc, int major, UV len)
 {
    need (enc, 9);
 
-   if (len < 24)
+   if (ecb_expect_true (len < 24))
       *enc->cur++ = major | len;
-   else if (len <= 0xff)
+   else if (ecb_expect_true (len <= 0xff))
      {
        *enc->cur++ = major | 24;
        *enc->cur++ = len;
@@ -229,10 +232,19 @@ encode_tag (enc_t *enc, UV tag)
   encode_uint (enc, 0xc0, tag);
 }
 
-static void
+ecb_inline void
 encode_str (enc_t *enc, int utf8, char *str, STRLEN len)
 {
-  if (ecb_expect_false (enc->cbor.flags & F_ALLOW_STRINGREF))
+  encode_uint (enc, utf8 ? 0x60 : 0x40, len);
+  need (enc, len);
+  memcpy (enc->cur, str, len);
+  enc->cur += len;
+}
+
+static void
+encode_strref (enc_t *enc, int utf8, char *str, STRLEN len)
+{
+  if (ecb_expect_false (enc->cbor.flags & F_PACK_STRINGS))
     {
       SV **svp = hv_fetch (enc->stringref[!!utf8], str, len, 1);
 
@@ -251,10 +263,7 @@ encode_str (enc_t *enc, int utf8, char *str, STRLEN len)
         }
     }
 
-  encode_uint (enc, utf8 ? 0x60 : 0x40, len);
-  need (enc, len);
-  memcpy (enc->cur, str, len);
-  enc->cur += len;
+  encode_str (enc, utf8, str, len);
 }
 
 static void encode_sv (enc_t *enc, SV *sv);
@@ -303,7 +312,7 @@ encode_hv (enc_t *enc, HV *hv)
       if (HeKLEN (he) == HEf_SVKEY)
         encode_sv (enc, HeSVKEY (he));
       else
-        encode_str (enc, HeKUTF8 (he), HeKEY (he), HeKLEN (he));
+        encode_strref (enc, HeKUTF8 (he), HeKEY (he), HeKLEN (he));
 
       encode_sv (enc, ecb_expect_false (mg) ? hv_iterval (hv, he) : HeVAL (he));
     }
@@ -414,7 +423,7 @@ encode_rv (enc_t *enc, SV *sv)
 
           encode_tag (enc, CBOR_TAG_PERL_OBJECT);
           encode_uint (enc, 0x80, count + 1);
-          encode_str (enc, HvNAMEUTF8 (stash), HvNAME (stash), HvNAMELEN (stash));
+          encode_strref (enc, HvNAMEUTF8 (stash), HvNAME (stash), HvNAMELEN (stash));
 
           while (count)
             encode_sv (enc, SP[1 - count--]);
@@ -483,7 +492,7 @@ encode_sv (enc_t *enc, SV *sv)
     {
       STRLEN len;
       char *str = SvPV (sv, len);
-      encode_str (enc, SvUTF8 (sv), str, len);
+      encode_strref (enc, SvUTF8 (sv), str, len);
     }
   else if (SvNOKp (sv))
     encode_nv (enc, sv);
@@ -519,7 +528,7 @@ encode_cbor (SV *scalar, CBOR *cbor)
 
   SvPOK_only (enc.sv);
 
-  if (cbor->flags & F_ALLOW_STRINGREF)
+  if (cbor->flags & F_PACK_STRINGS)
     {
       encode_tag (&enc, CBOR_TAG_STRINGREF_NAMESPACE);
       enc.stringref[0]= (HV *)sv_2mortal ((SV *)newHV ());
@@ -1138,7 +1147,7 @@ void shrink (CBOR *self, int enable = 1)
         shrink          = F_SHRINK
         allow_unknown   = F_ALLOW_UNKNOWN
         allow_sharing   = F_ALLOW_SHARING
-        allow_stringref = F_ALLOW_STRINGREF
+        pack_strings    = F_PACK_STRINGS
 	PPCODE:
 {
         if (enable)
@@ -1154,7 +1163,7 @@ void get_shrink (CBOR *self)
         get_shrink          = F_SHRINK
         get_allow_unknown   = F_ALLOW_UNKNOWN
         get_allow_sharing   = F_ALLOW_SHARING
-        get_allow_stringref = F_ALLOW_STRINGREF
+        get_pack_strings    = F_PACK_STRINGS
 	PPCODE:
         XPUSHs (boolSV (self->flags & ix));
 

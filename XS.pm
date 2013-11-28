@@ -28,38 +28,31 @@ CBOR::XS - Concise Binary Object Representation (CBOR, RFC7049)
 
 =head1 DESCRIPTION
 
-WARNING! This module is very new, and not very well tested (that's up
-to you to do). Furthermore, details of the implementation might change
-freely before version 1.0. And lastly, most extensions depend on an IANA
-assignment, and until that assignment is official, this implementation is
-not interoperable with other implementations (even future versions of this
-module) until the assignment is done.
-
-You are still invited to try out CBOR, and this module.
-
 This module converts Perl data structures to the Concise Binary Object
 Representation (CBOR) and vice versa. CBOR is a fast binary serialisation
-format that aims to use a superset of the JSON data model, i.e. when you
-can represent something in JSON, you should be able to represent it in
-CBOR.
+format that aims to use an (almost) superset of the JSON data model, i.e.
+when you can represent something useful in JSON, you should be able to
+represent it in CBOR.
 
-In short, CBOR is a faster and very compact binary alternative to JSON,
+In short, CBOR is a faster and quite compact binary alternative to JSON,
 with the added ability of supporting serialisation of Perl objects. (JSON
 often compresses better than CBOR though, so if you plan to compress the
-data later you might want to compare both formats first).
+data later and speed is less important you might want to compare both
+formats first).
 
 To give you a general idea about speed, with texts in the megabyte range,
 C<CBOR::XS> usually encodes roughly twice as fast as L<Storable> or
 L<JSON::XS> and decodes about 15%-30% faster than those. The shorter the
 data, the worse L<Storable> performs in comparison.
 
-As for compactness, C<CBOR::XS> encoded data structures are usually about
-20% smaller than the same data encoded as (compact) JSON or L<Storable>.
+Regarding compactness, C<CBOR::XS>-encoded data structures are usually
+about 20% smaller than the same data encoded as (compact) JSON or
+L<Storable>.
 
-In addition to the core CBOR data format, this module implements a number
-of extensions, to support cyclic and self-referencing data structures
-(see C<allow_sharing>), string deduplication (see C<allow_stringref>) and
-scalar references (always enabled).
+In addition to the core CBOR data format, this module implements a
+number of extensions, to support cyclic and shared data structures (see
+C<allow_sharing>), string deduplication (see C<pack_strings>) and scalar
+references (always enabled).
 
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
@@ -73,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 0.09;
+our $VERSION = '1.0';
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -188,11 +181,13 @@ reference to the earlier value.
 
 This means that such values will only be encoded once, and will not result
 in a deep cloning of the value on decode, in decoders supporting the value
-sharing extension.
+sharing extension. This also makes it possible to encode cyclic data
+structures.
 
 It is recommended to leave it off unless you know your
 communication partner supports the value sharing extensions to CBOR
-(http://cbor.schmorp.de/value-sharing).
+(L<http://cbor.schmorp.de/value-sharing>), as without decoder support, the
+resulting data structure might be unusable.
 
 Detecting shared values incurs a runtime overhead when values are encoded
 that have a reference counter large than one, and might unnecessarily
@@ -203,30 +198,32 @@ At the moment, only targets of references can be shared (e.g. scalars,
 arrays or hashes pointed to by a reference). Weirder constructs, such as
 an array with multiple "copies" of the I<same> string, which are hard but
 not impossible to create in Perl, are not supported (this is the same as
-for L<Storable>).
+with L<Storable>).
 
-If C<$enable> is false (the default), then C<encode> will encode
-exception when it encounters anything it cannot encode as CBOR.
+If C<$enable> is false (the default), then C<encode> will encode shared
+data structures repeatedly, unsharing them in the process. Cyclic data
+structures cannot be encoded in this mode.
 
 This option does not affect C<decode> in any way - shared values and
 references will always be decoded properly if present.
 
-=item $cbor = $cbor->allow_stringref ([$enable])
+=item $cbor = $cbor->pack_strings ([$enable])
 
-=item $enabled = $cbor->get_allow_stringref
+=item $enabled = $cbor->get_pack_strings
 
 If C<$enable> is true (or missing), then C<encode> will try not to encode
 the same string twice, but will instead encode a reference to the string
-instead. Depending on your data format. this can save a lot of space, but
+instead. Depending on your data format, this can save a lot of space, but
 also results in a very large runtime overhead (expect encoding times to be
 2-4 times as high as without).
 
 It is recommended to leave it off unless you know your
 communications partner supports the stringref extension to CBOR
-(http://cbor.schmorp.de/stringref).
+(L<http://cbor.schmorp.de/stringref>), as without decoder support, the
+resulting data structure might not be usable.
 
-If C<$enable> is false (the default), then C<encode> will encode
-exception when it encounters anything it cannot encode as CBOR.
+If C<$enable> is false (the default), then C<encode> will encode strings
+the standard CBOR way.
 
 This option does not affect C<decode> in any way - string references will
 always be decoded properly if present.
@@ -257,7 +254,7 @@ up the tag in the C<%CBOR::XS::FILTER> hash. If an entry exists it must be
 a code reference that is called with tag and value, and is responsible for
 decoding the value. If no entry exists, it returns no values.
 
-Example: decode all tags not handled internally into CBOR::XS::Tagged
+Example: decode all tags not handled internally into C<CBOR::XS::Tagged>
 objects, with no other special handling (useful when working with
 potentially "unsafe" CBOR data).
 
@@ -321,7 +318,7 @@ support, 64 bit integers will be truncated or otherwise corrupted.
 
 =item byte strings
 
-Byte strings will become octet strings in Perl (the byte values 0..255
+Byte strings will become octet strings in Perl (the Byte values 0..255
 will simply become characters of the same value in Perl).
 
 =item UTF-8 strings
@@ -354,7 +351,7 @@ error). See the L<Types::Serialiser> manpage for details.
 Tagged items consists of a numeric tag and another CBOR value.
 
 See L<TAG HANDLING AND EXTENSIONS> and the description of C<< ->filter >>
-for details.
+for details on which tags are handled how.
 
 =item anything else
 
@@ -367,8 +364,8 @@ error.
 =head2 PERL -> CBOR
 
 The mapping from Perl to CBOR is slightly more difficult, as Perl is a
-truly typeless language, so we can only guess which CBOR type is meant by
-a Perl value.
+typeless language. That means this module can only guess which CBOR type
+is meant by a perl value.
 
 =over 4
 
@@ -376,7 +373,7 @@ a Perl value.
 
 Perl hash references become CBOR maps. As there is no inherent ordering in
 hash keys (or CBOR maps), they will usually be encoded in a pseudo-random
-order.
+order. This order can be different each time a hahs is encoded.
 
 Currently, tied hashes will use the indefinite-length format, while normal
 hashes will use the fixed-length format.
@@ -387,15 +384,18 @@ Perl array references become fixed-length CBOR arrays.
 
 =item other references
 
-Other unblessed references are generally not allowed and will cause an
-exception to be thrown, except for references to the integers C<0> and
-C<1>, which get turned into false and true in CBOR.
+Other unblessed references will be represented using
+the indirection tag extension (tag value C<22098>,
+L<http://cbor.schmorp.de/indirection>). CBOR decoders are guaranteed
+to be able to decode these values somehow, by either "doing the right
+thing", decoding into a generic tagged object, simply ignoring the tag, or
+something else.
 
 =item CBOR::XS::Tagged objects
 
 Objects of this type must be arrays consisting of a single C<[tag, value]>
 pair. The (numerical) tag will be encoded as a CBOR tag, the value will
-be encoded as appropriate for the value. You cna use C<CBOR::XS::tag> to
+be encoded as appropriate for the value. You must use C<CBOR::XS::tag> to
 create such objects.
 
 =item Types::Serialiser::true, Types::Serialiser::false, Types::Serialiser::error
@@ -422,7 +422,7 @@ before encoding as CBOR strings, and anything else as number value:
    encode_cbor [-3.0e17]                # yields [-3e+17]
    my $value = 5; encode_cbor [$value]  # yields [5]
 
-   # used as string, so dump as string
+   # used as string, so dump as string (either byte or text)
    print $value;
    encode_cbor [$value]                 # yields ["5"]
 
@@ -435,6 +435,16 @@ You can force the type to be a CBOR string by stringifying it:
    "$x";        # stringified
    $x .= "";    # another, more awkward way to stringify
    print $x;    # perl does it for you, too, quite often
+
+You can force whether a string ie encoded as byte or text string by using
+C<utf8::upgrade> and C<utf8::downgrade>):
+
+  utf8::upgrade $x;   # encode $x as text string
+  utf8::downgrade $x; # encode $x as byte string
+
+Perl doesn't define what operations up- and downgrade strings, so if the
+difference between byte and text is important, you should up- or downgrade
+your string as late as possible before encoding.
 
 You can force the type to be a CBOR number by numifying it:
 
@@ -511,7 +521,7 @@ the URI module. CBOR has a custom tag value for URIs, namely 32:
      my ($self) = @_;
      my $uri = "$self"; # stringify uri
      utf8::upgrade $uri; # make sure it will be encoded as UTF-8 string
-     CBOR::XS::tagged 32, "$_[0]"
+     CBOR::XS::tag 32, "$_[0]"
   }
 
 This will encode URIs as a UTF-8 string with tag 32, which indicates an
@@ -677,22 +687,22 @@ overriden by the user.
 
 =over 4
 
-=item <unassigned> (perl-object, L<http://cbor.schmorp.de/perl-object>)
+=item 26 (perl-object, L<http://cbor.schmorp.de/perl-object>)
 
 These tags are automatically created (and decoded) for serialisable
 objects using the C<FREEZE/THAW> methods (the L<Types::Serialier> object
 serialisation protocol). See L<OBJECT SERIALISATION> for details.
 
-=item <unassigned>, <unassigned> (sharable, sharedref, L <http://cbor.schmorp.de/value-sharing>)
+=item 28, 29 (sharable, sharedref, L <http://cbor.schmorp.de/value-sharing>)
 
 These tags are automatically decoded when encountered, resulting in
 shared values in the decoded object. They are only encoded, however, when
 C<allow_sharable> is enabled.
 
-=item <unassigned>, <unassigned> (stringref-namespace, stringref, L <http://cbor.schmorp.de/stringref>)
+=item 256, 25 (stringref-namespace, stringref, L <http://cbor.schmorp.de/stringref>)
 
 These tags are automatically decoded when encountered. They are only
-encoded, however, when C<allow_stringref> is enabled.
+encoded, however, when C<pack_strings> is enabled.
 
 =item 22098 (indirection, L<http://cbor.schmorp.de/indirection>)
 
