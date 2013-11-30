@@ -1,6 +1,17 @@
 Revision history for Perl extension CBOR::XS
 
 TODO: pack_keys?
+TODO: document encode_cbor_sharing?
+
+1.1  Sat Nov 30 19:14:27 CET 2013
+	- INCOMPATIBLE CHANGE: new decoder setting: allow_cyclic, needed to decode
+          cyclic data structures (to avoid memleaks in unsuspecting code).
+	- no longer "share" references that aren't, i.e. true/false/null/error/tagged.
+	- fix stringref w.r.t. indefinite-length strings.
+        - verify indefinite-length string chunk types.
+        - do not allow extremely large arrays - assume an array element
+          requires at least one CBOR byte, to avoid memory exhaustion attacks.
+        - major code overhaul.
 
 1.0  Thu Nov 28 16:43:31 CET 2013
         - use the now official tag values for extensions. remove the

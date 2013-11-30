@@ -50,9 +50,9 @@ about 20% smaller than the same data encoded as (compact) JSON or
 L<Storable>.
 
 In addition to the core CBOR data format, this module implements a
-number of extensions, to support cyclic and shared data structures (see
-C<allow_sharing>), string deduplication (see C<pack_strings>) and scalar
-references (always enabled).
+number of extensions, to support cyclic and shared data structures
+(see C<allow_sharing> and C<allow_cycles>), string deduplication (see
+C<pack_strings>) and scalar references (always enabled).
 
 The primary goal of this module is to be I<correct> and the secondary goal
 is to be I<fast>. To reach the latter goal it was written in C.
@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = '1.0';
+our $VERSION = 1.1;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -182,7 +182,8 @@ reference to the earlier value.
 This means that such values will only be encoded once, and will not result
 in a deep cloning of the value on decode, in decoders supporting the value
 sharing extension. This also makes it possible to encode cyclic data
-structures.
+structures (which need C<allow_cycles> to ne enabled to be decoded by this
+module).
 
 It is recommended to leave it off unless you know your
 communication partner supports the value sharing extensions to CBOR
@@ -192,7 +193,7 @@ resulting data structure might be unusable.
 Detecting shared values incurs a runtime overhead when values are encoded
 that have a reference counter large than one, and might unnecessarily
 increase the encoded size, as potentially shared values are encode as
-sharable whether or not they are actually shared.
+shareable whether or not they are actually shared.
 
 At the moment, only targets of references can be shared (e.g. scalars,
 arrays or hashes pointed to by a reference). Weirder constructs, such as
@@ -205,6 +206,21 @@ data structures repeatedly, unsharing them in the process. Cyclic data
 structures cannot be encoded in this mode.
 
 This option does not affect C<decode> in any way - shared values and
+references will always be decoded properly if present.
+
+=item $cbor = $cbor->allow_cycles ([$enable])
+
+=item $enabled = $cbor->get_allow_cycles
+
+If C<$enable> is true (or missing), then C<decode> will happily decode
+self-referential (cyclic) data structures. By default these will not be
+decoded, as they need manual cleanup to avoid memory leaks, so code that
+isn't prepared for this will not leak memory.
+
+If C<$enable> is false (the default), then C<decode> will throw an error
+when it encounters a self-referential/cyclic data structure.
+
+This option does not affect C<encode> in any way - shared values and
 references will always be decoded properly if present.
 
 =item $cbor = $cbor->pack_strings ([$enable])
@@ -467,10 +483,16 @@ precision.
 
 =head2 OBJECT SERIALISATION
 
+This module implements both a CBOR-specific and the generic
+L<Types::Serialier> object serialisation protocol. The following
+subsections explain both methods.
+
+=head3 ENCODING
+
 This module knows two way to serialise a Perl object: The CBOR-specific
 way, and the generic way.
 
-Whenever the encoder encounters a Perl object that it cnanot serialise
+Whenever the encoder encounters a Perl object that it cannot serialise
 directly (most of them), it will first look up the C<TO_CBOR> method on
 it.
 
@@ -486,11 +508,18 @@ The C<FREEZE> method can return any number of values (i.e. zero or
 more). These will be encoded as CBOR perl object, together with the
 classname.
 
+These methods I<MUST NOT> change the data structure that is being
+serialised. Failure to comply to this can result in memory corruption -
+and worse.
+
 If an object supports neither C<TO_CBOR> nor C<FREEZE>, encoding will fail
 with an error.
 
-Objects encoded via C<TO_CBOR> cannot be automatically decoded, but
-objects encoded via C<FREEZE> can be decoded using the following protocol:
+=head3 DECODING
+
+Objects encoded via C<TO_CBOR> cannot (normally) be automatically decoded,
+but objects encoded via C<FREEZE> can be decoded using the following
+protocol:
 
 When an encoded CBOR perl object is encountered by the decoder, it will
 look up the C<THAW> method, by using the stored classname, and will fail
@@ -500,7 +529,7 @@ After the lookup it will call the C<THAW> method with the stored classname
 as first argument, the constant string C<CBOR> as second argument, and all
 values returned by C<FREEZE> as remaining arguments.
 
-=head4 EXAMPLES
+=head3 EXAMPLES
 
 Here is an example C<TO_CBOR> method:
 
@@ -693,11 +722,25 @@ These tags are automatically created (and decoded) for serialisable
 objects using the C<FREEZE/THAW> methods (the L<Types::Serialier> object
 serialisation protocol). See L<OBJECT SERIALISATION> for details.
 
-=item 28, 29 (sharable, sharedref, L <http://cbor.schmorp.de/value-sharing>)
+=item 28, 29 (shareable, sharedref, L <http://cbor.schmorp.de/value-sharing>)
 
-These tags are automatically decoded when encountered, resulting in
+These tags are automatically decoded when encountered (and they do not
+result in a cyclic data structure, see C<allow_cycles>), resulting in
 shared values in the decoded object. They are only encoded, however, when
-C<allow_sharable> is enabled.
+C<allow_sharing> is enabled.
+
+Not all shared values can be successfully decoded: values that reference
+themselves will I<currently> decode as C<undef> (this is not the same
+as a reference pointing to itself, which will be represented as a value
+that contains an indirect reference to itself - these will be decoded
+properly).
+
+Note that considerably more shared value data structures can be decoded
+than will be encoded - currently, only values pointed to by references
+will be shared, others will not. While non-reference shared values can be
+generated in Perl with some effort, they were considered too unimportant
+to be supported in the encoder. The decoder, however, will decode these
+values as shared values.
 
 =item 256, 25 (stringref-namespace, stringref, L <http://cbor.schmorp.de/stringref>)
 
@@ -873,6 +916,15 @@ long double to represent floating point values, they might not be encoded
 properly. Half precision types are accepted, but not encoded.
 
 Strict mode and canonical mode are not implemented.
+
+
+=head1 LIMITATIONS ON PERLS WITHOUT 64-BIT INTEGER SUPPORT
+
+On perls that were built without 64 bit integer support (these are rare
+nowadays, even on 32 bit architectures), support for any kind of 64 bit
+integer in CBOR is very limited - most likely, these 64 bit values will
+be truncated, corrupted, or otherwise not decoded correctly. This also
+includes string, array and map sizes that are stored as 64 bit integers.
 
 
 =head1 THREADS
