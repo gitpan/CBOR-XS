@@ -1,4 +1,4 @@
-use 5.010001;
+use 5.010001; # for utf-8, and Time::Piece
 use ExtUtils::MakeMaker;
 
 WriteMakefile(

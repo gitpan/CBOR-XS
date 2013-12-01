@@ -2,6 +2,13 @@ Revision history for Perl extension CBOR::XS
 
 TODO: pack_keys?
 TODO: document encode_cbor_sharing?
+TODO: weaken cyclic structures?
+
+1.11 Sun Dec  1 18:00:00 CET 2013
+	- new setting: validate_utf8, for when you can't trust your cbor data.
+        - do not leak memory on decoding errors, when allow_cycles is enabled.
+        - add default filters for tags 0 and 1, using Time::Piece.
+        - more tests added.
 
 1.1  Sat Nov 30 19:14:27 CET 2013
 	- INCOMPATIBLE CHANGE: new decoder setting: allow_cyclic, needed to decode

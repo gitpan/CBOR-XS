@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 1.1;
+our $VERSION = 1.11;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -243,6 +243,31 @@ the standard CBOR way.
 
 This option does not affect C<decode> in any way - string references will
 always be decoded properly if present.
+
+=item $cbor = $cbor->validate_utf8 ([$enable])
+
+=item $enabled = $cbor->get_validate_utf8
+
+If C<$enable> is true (or missing), then C<decode> will validate that
+elements (text strings) containing UTF-8 data in fact contain valid UTF-8
+data (instead of blindly accepting it). This validation obviously takes
+extra time during decoding.
+
+The concept of "valid UTF-8" used is perl's concept, which is a superset
+of the official UTF-8.
+
+If C<$enable> is false (the default), then C<decode> will blindly accept
+UTF-8 data, marking them as valid UTF-8 in the resulting data structure
+regardless of whether thats true or not.
+
+Perl isn't too happy about corrupted UTF-8 in strings, but should
+generally not crash or do similarly evil things. Extensions might be not
+so forgiving, so it's recommended to turn on this setting if you receive
+untrusted CBOR.
+
+This option does not affect C<encode> in any way - strings that are
+supposedly valid UTF-8 will simply be dumped into the resulting CBOR
+string without checking whether that is, in fact, true or not.
 
 =item $cbor = $cbor->filter ([$cb->($tag, $value)])
 
@@ -776,6 +801,15 @@ required module cannot be loaded.
 
 =over 4
 
+=item 0, 1 (date/time string, seconds since the epoch)
+
+These tags are decoded into L<Time::Piece> objects. The corresponding
+C<Time::Piece::TO_CBOR> method always encodes into tag 1 values currently.
+
+The L<Time::Piece> API is generally surprisingly bad, and fractional
+seconds are only accidentally kept intact, so watch out. On the plus side,
+the module comes with perl since 5.10, which has to count for something.
+
 =item 2, 3 (positive/negative bignum)
 
 These tags are decoded into L<Math::BigInt> objects. The corresponding
@@ -949,8 +983,31 @@ service. I put the contact address into my modules for a reason.
 =cut
 
 our %FILTER = (
-   # 0 # rfc4287 datetime, utf-8
-   # 1 # unix timestamp, any
+   0 => sub { # rfc4287 datetime, utf-8
+      require Time::Piece;
+      # Time::Piece::Strptime uses the "incredibly flexible date parsing routine"
+      # from FreeBSD, which can't parse ISO 8601, RFC3339, RFC4287 or much of anything
+      # else either. Whats incredibe over standard strptime totally escapes me.
+      # doesn't do fractional times, either. sigh.
+      scalar eval {
+         my $s = $_[1];
+
+         $s =~ s/Z$/+00:00/;
+         $s =~ s/(\.[0-9]+)?([+-][0-9][0-9]):([0-9][0-9])/$2$3/
+            or die;
+
+         my $f = $1; # fractional part. hopefully
+ 
+         my $d = Time::Piece->strptime ($s, "%Y-%m-%dT%H:%M:%S%z");
+
+         Time::Piece::gmtime ($d->epoch + $f)
+      } || die "corrupted CBOR date/time string ($_[0])";
+   },
+ 
+   1 => sub { # seconds since the epoch, possibly fractional
+      require Time::Piece;
+      scalar Time::Piece::gmtime (pop)
+   },
 
    2 => sub { # pos bigint
       require Math::BigInt;
@@ -996,7 +1053,7 @@ sub CBOR::XS::default_filter {
 sub URI::TO_CBOR {
    my $uri = $_[0]->as_string;
    utf8::upgrade $uri;
-   CBOR::XS::tag 32, $uri
+   tag 32, $uri
 }
 
 sub Math::BigInt::TO_CBOR {
@@ -1005,13 +1062,17 @@ sub Math::BigInt::TO_CBOR {
    } else {
       my $hex = substr $_[0]->as_hex, 2;
       $hex = "0$hex" if 1 & length $hex; # sigh
-      CBOR::XS::tag $_[0] >= 0 ? 2 : 3, pack "H*", $hex
+      tag $_[0] >= 0 ? 2 : 3, pack "H*", $hex
    }
 }
 
 sub Math::BigFloat::TO_CBOR {
    my ($m, $e) = $_[0]->parts;
-   CBOR::XS::tag 4, [$e->numify, $m]
+   tag 4, [$e->numify, $m]
+}
+
+sub Time::Piece::TO_CBOR {
+   tag 1, $_[0]->epoch
 }
 
 XSLoader::load "CBOR::XS", $VERSION;

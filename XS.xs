@@ -101,6 +101,7 @@ enum cbor_tag
 #define F_ALLOW_SHARING   0x00000004UL
 #define F_ALLOW_CYCLES    0x00000008UL
 #define F_PACK_STRINGS    0x00000010UL
+#define F_VALIDATE_UTF8   0x00000020UL
 
 #define INIT_SIZE   32 // initial scalar size to be allocated
 
@@ -738,9 +739,6 @@ decode_he (dec_t *dec, HV *hv)
 
         dec->cur += len;
 
-        if (ecb_expect_false (dec->stringref))
-          av_push (dec->stringref, newSVpvn (key, len));
-
         hv_store (hv, key,  len, decode_sv (dec), 0);
 
         return;
@@ -752,8 +750,9 @@ decode_he (dec_t *dec, HV *hv)
 
         dec->cur += len;
 
-        if (ecb_expect_false (dec->stringref))
-          av_push (dec->stringref, newSVpvn_utf8 (key, len, 1));
+        if (ecb_expect_false (dec->cbor.flags & F_VALIDATE_UTF8))
+          if (!is_utf8_string (key, len))
+            ERR ("corrupted CBOR data (invalid UTF-8 in map key)");
 
         hv_store (hv, key, -len, decode_sv (dec), 0);
 
@@ -765,6 +764,9 @@ decode_he (dec_t *dec, HV *hv)
 
   hv_store_ent (hv, k, v, 0);
   SvREFCNT_dec (k);
+
+fail:
+  ;
 }
 
 static SV *
@@ -856,7 +858,13 @@ decode_str (dec_t *dec, int utf8)
     }
 
   if (utf8)
-    SvUTF8_on (sv);
+    {
+      if (ecb_expect_false (dec->cbor.flags & F_VALIDATE_UTF8))
+        if (!is_utf8_string (SvPVX (sv), SvCUR (sv)))
+          ERR ("corrupted CBOR data (invalid UTF-8 in text string)");
+
+      SvUTF8_on (sv);
+    }
 
   return sv;
 
@@ -1165,6 +1173,17 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
 
   if (dec.err)
     {
+      if (dec.shareable)
+        {
+          // need to break cyclic links, which whould all be in shareable
+          int i;
+          SV **svp;
+
+          for (i = av_len (dec.shareable) + 1; i--; )
+            if ((svp = av_fetch (dec.shareable, i, 0)))
+              sv_setsv (*svp, &PL_sv_undef);
+        }
+
       SvREFCNT_dec (sv);
       croak ("%s, at offset %d (octet 0x%02x)", dec.err, dec.cur - (U8 *)data, (int)(uint8_t)*dec.cur);
     }
@@ -1225,6 +1244,7 @@ void shrink (CBOR *self, int enable = 1)
         allow_sharing   = F_ALLOW_SHARING
         allow_cycles    = F_ALLOW_CYCLES
         pack_strings    = F_PACK_STRINGS
+        validate_utf8   = F_VALIDATE_UTF8
 	PPCODE:
 {
         if (enable)
@@ -1242,6 +1262,7 @@ void get_shrink (CBOR *self)
         get_allow_sharing   = F_ALLOW_SHARING
         get_allow_cycles    = F_ALLOW_CYCLES
         get_pack_strings    = F_PACK_STRINGS
+        get_validate_utf8   = F_VALIDATE_UTF8
 	PPCODE:
         XPUSHs (boolSV (self->flags & ix));
 

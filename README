@@ -202,6 +202,29 @@ OBJECT-ORIENTED INTERFACE
         This option does not affect "decode" in any way - string references
         will always be decoded properly if present.
 
+    $cbor = $cbor->validate_utf8 ([$enable])
+    $enabled = $cbor->get_validate_utf8
+        If $enable is true (or missing), then "decode" will validate that
+        elements (text strings) containing UTF-8 data in fact contain valid
+        UTF-8 data (instead of blindly accepting it). This validation
+        obviously takes extra time during decoding.
+
+        The concept of "valid UTF-8" used is perl's concept, which is a
+        superset of the official UTF-8.
+
+        If $enable is false (the default), then "decode" will blindly accept
+        UTF-8 data, marking them as valid UTF-8 in the resulting data
+        structure regardless of whether thats true or not.
+
+        Perl isn't too happy about corrupted UTF-8 in strings, but should
+        generally not crash or do similarly evil things. Extensions might be
+        not so forgiving, so it's recommended to turn on this setting if you
+        receive untrusted CBOR.
+
+        This option does not affect "encode" in any way - strings that are
+        supposedly valid UTF-8 will simply be dumped into the resulting CBOR
+        string without checking whether that is, in fact, true or not.
+
     $cbor = $cbor->filter ([$cb->($tag, $value)])
     $cb_or_undef = $cbor->get_filter
         Sets or replaces the tagged value decoding filter (when $cb is
@@ -655,6 +678,16 @@ TAG HANDLING AND EXTENSIONS
     the perl core distribution (e.g. URI), it is (currently) up to the user
     to provide these modules. The decoding usually fails with an exception
     if the required module cannot be loaded.
+
+    0, 1 (date/time string, seconds since the epoch)
+        These tags are decoded into Time::Piece objects. The corresponding
+        "Time::Piece::TO_CBOR" method always encodes into tag 1 values
+        currently.
+
+        The Time::Piece API is generally surprisingly bad, and fractional
+        seconds are only accidentally kept intact, so watch out. On the plus
+        side, the module comes with perl since 5.10, which has to count for
+        something.
 
     2, 3 (positive/negative bignum)
         These tags are decoded into Math::BigInt objects. The corresponding
