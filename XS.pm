@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 1.11;
+our $VERSION = 1.12;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -989,18 +989,20 @@ our %FILTER = (
       # from FreeBSD, which can't parse ISO 8601, RFC3339, RFC4287 or much of anything
       # else either. Whats incredibe over standard strptime totally escapes me.
       # doesn't do fractional times, either. sigh.
+      # In fact, it's all a lie, it uses whatever strptime it wants, and of course,
+      # they are all incomptible. The openbsd one simply ignores %z (but according to the
+      # docs, it would be much more incredibly flexible indeed. If it worked, that is.).
       scalar eval {
          my $s = $_[1];
 
          $s =~ s/Z$/+00:00/;
-         $s =~ s/(\.[0-9]+)?([+-][0-9][0-9]):([0-9][0-9])/$2$3/
+         $s =~ s/(\.[0-9]+)?([+-][0-9][0-9]):([0-9][0-9])$//
             or die;
 
-         my $f = $1; # fractional part. hopefully
- 
-         my $d = Time::Piece->strptime ($s, "%Y-%m-%dT%H:%M:%S%z");
+         my $b = $1 - ($2 * 60 + $3) * 60; # fractional part + offset. hopefully
+         my $d = Time::Piece->strptime ($s, "%Y-%m-%dT%H:%M:%S");
 
-         Time::Piece::gmtime ($d->epoch + $f)
+         Time::Piece::gmtime ($d->epoch + $b)
       } || die "corrupted CBOR date/time string ($_[0])";
    },
  
