@@ -130,6 +130,11 @@ typedef struct {
   U32 max_depth;
   STRLEN max_size;
   SV *filter;
+
+  // for the incremental parser
+  STRLEN incr_pos; // the current offset into the text
+  STRLEN incr_need; // minimum bytes needed to decode
+  AV *incr_count; // for every nesting level, the number of outstanding values, or -1 for indef.
 } CBOR;
 
 ecb_inline void
@@ -143,6 +148,7 @@ ecb_inline void
 cbor_free (CBOR *cbor)
 {
   SvREFCNT_dec (cbor->filter);
+  SvREFCNT_dec (cbor->incr_count);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1134,9 +1140,11 @@ decode_sv (dec_t *dec)
               }
 
             // 0..19 unassigned simple
-            // 24 reserved + unassigned (reserved values are not encodable)
+            // 24 reserved + unassigned simple (reserved values are not encodable)
+            // 28-30 unassigned misc
+            // 31 break code
             default:
-              ERR ("corrupted CBOR data (reserved/unassigned major 7 value)");
+              ERR ("corrupted CBOR data (reserved/unassigned/unexpected major 7 value)");
           }
 
         break;
@@ -1193,6 +1201,126 @@ decode_cbor (SV *string, CBOR *cbor, char **offset_return)
   return sv;
 }
 
+/////////////////////////////////////////////////////////////////////////////
+// incremental parser
+
+#define INCR_DONE(cbor) (AvFILLp (cbor->incr_count) < 0)
+
+// returns 0 for notyet, 1 for success or error
+static int
+incr_parse (CBOR *self, SV *cborstr)
+{
+  STRLEN cur;
+  SvPV (cborstr, cur);
+
+  while (ecb_expect_true (self->incr_need <= cur))
+    {
+      // table of integer count bytes
+      static I8 incr_len[MINOR_MASK + 1] = {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        1, 2, 4, 8,-1,-1,-1,-2
+      };
+
+      const U8 *p = SvPVX (cborstr) + self->incr_pos;
+      U8 m = *p & MINOR_MASK;
+      IV count = SvIVX (AvARRAY (self->incr_count)[AvFILLp (self->incr_count)]);
+      I8 ilen = incr_len[m];
+
+      self->incr_need = self->incr_pos + 1;
+
+      if (ecb_expect_false (ilen < 0))
+        {
+          if (m != MINOR_INDEF)
+            return 1; // error
+
+          if (*p == (MAJOR_MISC | MINOR_INDEF))
+            {
+              if (count >= 0)
+                return 1; // error
+
+              count = 1;
+            }
+          else
+            {
+              av_push (self->incr_count, newSViv (-1)); //TODO: nest
+              count = -1;
+            }
+        }
+      else
+        {
+          self->incr_need += ilen;
+          if (ecb_expect_false (self->incr_need > cur))
+            return 0;
+
+          int major = *p >> MAJOR_SHIFT;
+
+          switch (major)
+            {
+              case MAJOR_BYTES   >> MAJOR_SHIFT:
+              case MAJOR_TEXT    >> MAJOR_SHIFT:
+              case MAJOR_ARRAY   >> MAJOR_SHIFT:
+              case MAJOR_MAP     >> MAJOR_SHIFT:
+                {
+                  UV len;
+
+                  if (ecb_expect_false (ilen))
+                    {
+                      len = 0;
+
+                      do {
+                        len = (len << 8) | *++p;
+                      } while (--ilen);
+                    }
+                  else
+                    len = m;
+
+                  switch (major)
+                    {
+                      case MAJOR_BYTES   >> MAJOR_SHIFT:
+                      case MAJOR_TEXT    >> MAJOR_SHIFT:
+                        self->incr_need += len;
+                        if (ecb_expect_false (self->incr_need > cur))
+                          return 0;
+
+                        break;
+
+                      case MAJOR_MAP     >> MAJOR_SHIFT:
+                        len <<= 1;
+                      case MAJOR_ARRAY   >> MAJOR_SHIFT:
+                        if (len)
+                          {
+                            av_push (self->incr_count, newSViv (len + 1)); //TODO: nest
+                            count = len + 1;
+                          }
+                        break;
+                    }
+                }
+            }
+        }
+
+      self->incr_pos = self->incr_need;
+
+      if (count > 0)
+        {
+          while (!--count)
+            {
+              if (!AvFILLp (self->incr_count))
+                return 1; // done
+
+              SvREFCNT_dec_NN (av_pop (self->incr_count));
+              count = SvIVX (AvARRAY (self->incr_count)[AvFILLp (self->incr_count)]);
+            }
+
+          SvIVX (AvARRAY (self->incr_count)[AvFILLp (self->incr_count)]) = count;
+        }
+    }
+
+  return 0;
+}
+
+                  
 /////////////////////////////////////////////////////////////////////////////
 // XS interface functions
 
@@ -1319,6 +1447,58 @@ void decode_prefix (CBOR *self, SV *cborstr)
         EXTEND (SP, 2);
         PUSHs (sv);
         PUSHs (sv_2mortal (newSVuv (offset - SvPVX (cborstr))));
+}
+
+void incr_parse (CBOR *self, SV *cborstr)
+	ALIAS:
+        incr_parse_multiple = 1
+	PPCODE:
+{
+        if (SvUTF8 (cborstr))
+          sv_utf8_downgrade (cborstr, 0);
+
+        if (!self->incr_count)
+          {
+            self->incr_count = newAV ();
+            self->incr_pos   = 0;
+            self->incr_need  = 1;
+
+            av_push (self->incr_count, newSViv (1));
+          }
+
+        do
+          {
+            if (!incr_parse (self, cborstr))
+              {
+                if (self->incr_need > self->max_size && self->max_size)
+                  croak ("attempted decode of CBOR text of %lu bytes size, but max_size is set to %lu",
+                         (unsigned long)self->incr_need, (unsigned long)self->max_size);
+
+                break;
+              }
+
+            SV *sv;
+            char *offset;
+
+            PUTBACK; sv = decode_cbor (cborstr, self, &offset); SPAGAIN;
+            XPUSHs (sv);
+
+            sv_chop (cborstr, offset);
+
+            av_clear (self->incr_count);
+            av_push (self->incr_count, newSViv (1));
+
+            self->incr_pos = 0;
+            self->incr_need = self->incr_pos + 1;
+          }
+        while (ix);
+}
+
+void incr_reset (CBOR *self)
+	CODE:
+{
+	SvREFCNT_dec (self->incr_count);
+        self->incr_count = 0;
 }
 
 void DESTROY (CBOR *self)

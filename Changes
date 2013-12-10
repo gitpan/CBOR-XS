@@ -4,9 +4,12 @@ TODO: pack_keys?
 TODO: document encode_cbor_sharing?
 TODO: weaken cyclic structures?
 
+1.2  Tue Dec 10 22:06:42 CET 2013
+	- implement an incremental decoder.
+
 1.12 Tue Dec  3 11:23:22 CET 2013
-	- work around broken Time::Piece (%z doesn't work as documented, gives
-          different results on different platforms(!)).
+	- work around broken Time::Piece (in old versions of the module, %z doesn't
+          work as documented, gives different results on different platforms(!)).
 
 1.11 Sun Dec  1 18:00:00 CET 2013
 	- new setting: validate_utf8, for when you can't trust your cbor data.

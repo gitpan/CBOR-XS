@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 1.12;
+our $VERSION = 1.2;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -332,6 +332,70 @@ starts.
 
    CBOR::XS->new->decode_prefix ("......")
    => ("...", 3)
+
+=back
+
+=head2 INCREMENTAL PARSING
+
+In some cases, there is the need for incremental parsing of JSON
+texts. While this module always has to keep both CBOR text and resulting
+Perl data structure in memory at one time, it does allow you to parse a
+CBOR stream incrementally, using a similar to using "decode_prefix" to see
+if a full CBOR object is available, but is much more efficient.
+
+It basically works by parsing as much of a CBOR string as possible - if
+the CBOR data is not complete yet, the pasrer will remember where it was,
+to be able to restart when more data has been accumulated. Once enough
+data is available to either decode a complete CBOR value or raise an
+error, a real decode will be attempted.
+
+A typical use case would be a network protocol that consists of sending
+and receiving CBOR-encoded messages. The solution that works with CBOR and
+about anything else is by prepending a length to every CBOR value, so the
+receiver knows how many octets to read. More compact (and slightly slower)
+would be to just send CBOR values back-to-back, as C<CBOR::XS> knows where
+a CBOR value ends, and doesn't need an explicit length.
+
+The following methods help with this:
+
+=over 4
+
+=item @decoded = $cbor->incr_parse ($buffer)
+
+This method attempts to decode exactly one CBOR value from the beginning
+of the given C<$buffer>. The value is removed from the C<$buffer> on
+success. When C<$buffer> doesn't contain a complete value yet, it returns
+nothing. Finally, when the C<$buffer> doesn't start with something
+that could ever be a valid CBOR value, it raises an exception, just as
+C<decode> would. In the latter case the decoder state is undefined and
+must be reset before being able to parse further.
+
+This method modifies the C<$buffer> in place. When no CBOR value can be
+decoded, the decoder stores the current string offset. On the next call,
+continues decoding at the place where it stopped before. For this to make
+sense, the C<$buffer> must begin with the same octets as on previous
+unsuccessful calls.
+
+You can call this method in scalar context, in which case it either
+returns a decoded value or C<undef>. This makes it impossible to
+distinguish between CBOR null values (which decode to C<undef>) and an
+unsuccessful decode, which is often acceptable.
+
+=item @decoded = $cbor->incr_parse_multiple ($buffer)
+
+Same as C<incr_parse>, but attempts to decode as many CBOR values as
+possible in one go, instead of at most one. Calls to C<incr_parse> and
+C<incr_parse_multiple> can be interleaved.
+
+=item $cbor->incr_reset
+
+Resets the incremental decoder. This throws away any saved state, so that
+subsequent calls to C<incr_parse> or C<incr_parse_multiple> start to parse
+a new CBOR value from the beginning of the C<$buffer> again.
+
+This method can be caled at any time, but it I<must> be called if you want
+to change your C<$buffer> or there was a decoding error and you want to
+reuse the C<$cbor> object for future incremental parsings.
 
 =back
 

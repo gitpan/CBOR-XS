@@ -66,7 +66,7 @@
 #endif
 
 /* work around x32 idiocy by defining proper macros */
-#if __x86_64 || _M_AMD64
+#if __amd64 || __x86_64 || _M_AMD64 || _M_X64
   #if _ILP32
     #define ECB_AMD64_X32 1
   #else
@@ -136,7 +136,7 @@
     #elif defined __ARM_ARCH_7__  || defined __ARM_ARCH_7A__  \
        || defined __ARM_ARCH_7M__ || defined __ARM_ARCH_7R__
       #define ECB_MEMORY_FENCE         __asm__ __volatile__ ("dmb"      : : : "memory")
-    #elif __sparc || __sparc__
+    #elif (__sparc || __sparc__) && !__sparcv8
       #define ECB_MEMORY_FENCE         __asm__ __volatile__ ("membar #LoadStore | #LoadLoad | #StoreStore | #StoreLoad" : : : "memory")
       #define ECB_MEMORY_FENCE_ACQUIRE __asm__ __volatile__ ("membar #LoadStore | #LoadLoad"                            : : : "memory")
       #define ECB_MEMORY_FENCE_RELEASE __asm__ __volatile__ ("membar #LoadStore             | #StoreStore")
