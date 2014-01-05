@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 1.2;
+our $VERSION = 1.25;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -1138,7 +1138,7 @@ sub Math::BigFloat::TO_CBOR {
 }
 
 sub Time::Piece::TO_CBOR {
-   tag 1, $_[0]->epoch
+   tag 1, 0 + $_[0]->epoch
 }
 
 XSLoader::load "CBOR::XS", $VERSION;

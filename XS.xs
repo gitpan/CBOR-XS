@@ -738,7 +738,7 @@ decode_he (dec_t *dec, HV *hv)
   // byte or utf-8 strings as keys, but only when !stringref
 
   if (ecb_expect_true (!dec->stringref))
-    if (ecb_expect_true ((*dec->cur - MAJOR_BYTES) <= LENGTH_EXT8))
+    if (ecb_expect_true ((U8)(*dec->cur - MAJOR_BYTES) <= LENGTH_EXT8))
       {
         I32 len = decode_uint (dec);
         char *key = (char *)dec->cur;
@@ -749,7 +749,7 @@ decode_he (dec_t *dec, HV *hv)
 
         return;
       }
-    else if (ecb_expect_true ((*dec->cur - MAJOR_TEXT) <= LENGTH_EXT8))
+    else if (ecb_expect_true ((U8)(*dec->cur - MAJOR_TEXT) <= LENGTH_EXT8))
       {
         I32 len = decode_uint (dec);
         char *key = (char *)dec->cur;
