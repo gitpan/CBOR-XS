@@ -66,7 +66,7 @@ package CBOR::XS;
 
 use common::sense;
 
-our $VERSION = 1.25;
+our $VERSION = 1.26;
 our @ISA = qw(Exporter);
 
 our @EXPORT = qw(encode_cbor decode_cbor);
@@ -220,8 +220,13 @@ isn't prepared for this will not leak memory.
 If C<$enable> is false (the default), then C<decode> will throw an error
 when it encounters a self-referential/cyclic data structure.
 
+FUTURE DIRECTION: the motivation behind this option is to avoid I<real>
+cycles - future versions of this module might chose to decode cyclic data
+structures using weak references when this option is off, instead of
+throwing an error.
+
 This option does not affect C<encode> in any way - shared values and
-references will always be decoded properly if present.
+references will always be encoded properly if present.
 
 =item $cbor = $cbor->pack_strings ([$enable])
 

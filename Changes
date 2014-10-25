@@ -4,6 +4,10 @@ TODO: pack_keys?
 TODO: document encode_cbor_sharing?
 TODO: weaken cyclic structures?
 
+1.26 Sat Oct 25 08:35:44 CEST 2014
+	- update the t/57_incr.t subtest that would rely on 64 bit ints.
+        - disable t/50_rfc.t test that fails because of broken data::dumper.
+
 1.25 Sun Jan  5 15:19:14 CET 2014
 	- map key decoding was pretty much botched due to the recent cleanups.
 	- work around Time::Piece->epoch returning a string value, avoid encoding

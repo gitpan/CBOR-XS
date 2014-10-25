@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <float.h>
 
+#define ECB_NO_THREADS 1
 #include "ecb.h"
 
 // compatibility with perl <5.18
